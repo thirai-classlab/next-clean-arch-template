@@ -21,7 +21,7 @@
     "test:e2e": "bash ../../.claude/tests/create-app-fresh-install-e2e.sh"
   },
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "execa": "^9.5.1",
     "giget": "^1.2.3",
     "kleur": "^4.1.5",
