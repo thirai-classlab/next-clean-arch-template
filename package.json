@@ -1,0 +1,21 @@
+{
+  "name": "next-clean-arch-template-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo root for next-clean-arch-template: CLI (packages/create-app) + Next.js skeleton (template/).",
+  "scripts": {
+    "build": "pnpm --filter @takuma-hirai/create-app build",
+    "test": "pnpm --filter @takuma-hirai/create-app test",
+    "type-check": "pnpm --filter @takuma-hirai/create-app type-check",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm --filter @takuma-hirai/create-app build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
