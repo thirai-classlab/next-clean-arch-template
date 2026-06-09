@@ -1,0 +1,80 @@
+// apps/web/src/app/auth/sign-out/route.ts
+// task-5 Step 1: POST sign-out Route Handler.
+//
+// draft 08 §「Auth pages」採用: form submit (POST) で sign-out。
+// `supabase.auth.signOut()` で server-side session + cookie をクリアし、
+// sign-in page に redirect する。
+//
+// GET ではなく POST 限定にすることで CSRF/prefetch 経由の意図しない sign-out を防ぐ。
+//
+// SECURITY (CRITICAL+HIGH 修正、#8):
+//  ① `mock_session` cookie の確実な失効。MOCK_MODE の session SSoT は
+//     sign-in.action.ts が発行する `mock_session=<role>` cookie (httpOnly / maxAge 3600)
+//     で、middleware.ts はこれを読んで /dashboard・/admin/* を認可する。
+//     `supabase.auth.signOut()` は Supabase 系 cookie しか消さないため、本 route で
+//     `mock_session` を maxAge:0 で明示失効しないと logout 後も最大 1h 認可が残存する。
+//  ② anti-bfcache。redirect 応答に `Cache-Control: no-store` を付与し、
+//     ブラウザ「戻る」での bfcache 復元 (認証済 page の email/role/admin UI 露出) を防ぐ。
+//     保護 page 側 (no-store) は middleware + (admin)/layout の force-dynamic で担保。
+//
+// SECURITY (MEDIUM-1 回帰修正、#8 再レビュー conf 0.87):
+//  純 MOCK_MODE (Supabase env 未設定) では `createClient()` 内の
+//  `createServerClient(url!, key!, …)` が空/undefined url で **同期 throw** する
+//  (@supabase/ssr: "Your project URL and API key are required …")。env-schema.ts は
+//  NEXT_PUBLIC_SUPABASE_URL を `.optional()` とし「MOCK_MODE で API key 無しデモ可能」を
+//  保証しているため、route が throw を catch しないと sign-out が 500 で落ち、
+//  下記 ① mock_session 失効に到達せず cookie 残存 = 認可残存となる。
+//  middleware.ts の env early-exit と整合させ、Supabase teardown を
+//  env 存在チェック + try-catch で囲い、Supabase 不在/失敗でも必ず
+//  mock_session 失効 + redirect に到達させる。
+
+import { NextResponse, type NextRequest } from 'next/server'
+import { cookies } from 'next/headers'
+import { createClient } from '@/lib/supabase/server'
+
+// MOCK_MODE session SSoT cookie 名 (sign-in.action.ts MOCK_SESSION_COOKIE と一致)。
+const MOCK_SESSION_COOKIE = 'mock_session'
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  // Supabase session teardown。純 MOCK_MODE (env 未設定) では createServerClient が
+  // 同期 throw するため、env 存在を確認してから呼び、さらに try-catch で囲って
+  // network 失敗等でも必ず後続の mock_session 失効 + redirect に到達させる
+  // (middleware.ts:51-53 の env early-exit と同方針)。
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (supabaseUrl && supabaseAnonKey) {
+    try {
+      const supabase = await createClient()
+      // signOut() は cookie 削除のみ、failure しても sign-in に redirect する (graceful)。
+      await supabase.auth.signOut()
+    } catch {
+      // Supabase 不在/到達不可 — mock_session 失効 + redirect は継続する。
+    }
+  }
+
+  // ① MOCK_MODE の session SSoT cookie を確実に失効させる。
+  // 発行時 (sign-in.action.ts SESSION_COOKIE_OPTIONS) の path / httpOnly / sameSite を
+  // 揃えて maxAge:0 で上書きしないと、ブラウザは別属性の cookie として残す可能性がある。
+  const cookieStore = await cookies()
+  cookieStore.set(MOCK_SESSION_COOKIE, '', {
+    maxAge: 0,
+    path: '/',
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+  })
+
+  const { origin } = new URL(request.url)
+  const response = NextResponse.redirect(`${origin}/auth/sign-in`, {
+    // 303 See Other: POST → GET 遷移を明示。
+    status: 303,
+  })
+
+  // ② anti-bfcache: redirect 応答自体をキャッシュさせない。
+  response.headers.set(
+    'Cache-Control',
+    'private, no-store, max-age=0, must-revalidate',
+  )
+
+  return response
+}
