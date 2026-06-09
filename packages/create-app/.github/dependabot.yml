@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # npm dependencies - weekly (includes patch/minor/major for all deps)
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+    open-pull-requests-limit: 5
+    # Note: daily patch-only entry removed (P-8) to avoid PR flood (~50+ PRs/month).
+    # Repo-level Dependabot security updates cover CVE-triggered patches automatically.
+
+  # GitHub Actions - weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+    open-pull-requests-limit: 5

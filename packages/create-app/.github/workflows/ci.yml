@@ -1,0 +1,39 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # NOTE: cache: pnpm は pnpm-lock.yaml の存在を要求するため、lockfile 不在の
+          # 独立 repo 化フェーズでは付けない。CLI repo 側で lockfile commit 後に有効化可能。
+
+      # NOTE: --no-frozen-lockfile は初回 publish 向け (packages/create-app は upstream で
+      # workspace member、独立 repo 化時に lockfile 不在)。CLI repo 側で `pnpm install` 後の
+      # pnpm-lock.yaml を commit すれば --frozen-lockfile に戻せる。
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm type-check
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Verify changeset file presence (H-02)
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(gh pr view ${{ github.event.pull_request.number }} \
+            --json files --jq '.files[].path' | grep '^\.changeset/.*\.md$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "::error::No .changeset/*.md file added. Run 'pnpm changeset' to create one."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
