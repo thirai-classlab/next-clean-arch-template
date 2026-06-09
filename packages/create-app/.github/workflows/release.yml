@@ -1,0 +1,48 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          scope: '@takuma-hirai'
+          # NOTE: cache: pnpm は pnpm-lock.yaml の存在を要求するため、lockfile 不在の
+          # 独立 repo 化フェーズでは付けない。CLI repo 側で lockfile commit 後に有効化可能。
+
+      # NOTE: --no-frozen-lockfile は初回 publish 向け (packages/create-app は upstream で
+      # workspace member、独立 repo 化時に lockfile 不在)。CLI repo 側で `pnpm install` 後の
+      # pnpm-lock.yaml を commit すれば --frozen-lockfile に戻せる。
+      - run: pnpm install --no-frozen-lockfile
+
+      - name: Verify tag matches package.json version (H-03)
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(jq -r .version package.json)
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION != package.json $PKG_VERSION"
+            echo "::error::Run 'pnpm changeset version' to bump package.json before tagging."
+            exit 1
+          fi
+          echo "Tag v$TAG_VERSION matches package.json v$PKG_VERSION"
+
+      - run: pnpm build
+      # NOTE: --no-git-checks は CI で --no-frozen-lockfile で install すると lockfile が
+      # 生成されて working tree が dirty 化するため、git-clean check を opt-out。
+      # CLI repo 側で pnpm-lock.yaml を commit すれば不要。
+      - run: pnpm publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
