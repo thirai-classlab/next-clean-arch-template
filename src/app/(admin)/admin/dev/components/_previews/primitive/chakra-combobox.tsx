@@ -1,7 +1,0 @@
-// _previews/primitive/chakra-combobox.tsx
-// Stage 1 placeholder — Stage 2 batch subagent will replace this with the real
-// Chakra UI v3 component preview.
-
-export default function ChakraComboboxPreview() {
-  return <span>Loading...</span>
-}

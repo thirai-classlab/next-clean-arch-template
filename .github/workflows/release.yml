@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# NOTE (monorepo recovery v0.1.1):
+# - workflows は repo root の `.github/workflows/` に置かないと GitHub Actions が trigger しない。
+#   旧 `packages/create-app/.github/workflows/` 配置だと 0 run (本 recovery の起源)。
+# - pnpm workspace 構成のため、`pnpm install` は repo root で 1 度実行 (lockfile / workspace 解決)。
+# - build / publish は `pnpm --filter @takuma-hirai/create-app` で target package を指定。
+# - tag verify は `packages/create-app/package.json` を直接読む。
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          scope: '@takuma-hirai'
+          # NOTE: cache: pnpm は pnpm-lock.yaml の存在を要求するため、lockfile 不在の
+          # 初回 publish フェーズでは付けない。次回以降 root pnpm-lock.yaml を commit すれば有効化可能。
+
+      # NOTE: --no-frozen-lockfile は初回 publish 向け (root lockfile が未 commit の場合)。
+      # 次回以降 root pnpm-lock.yaml を commit すれば --frozen-lockfile に戻せる。
+      - run: pnpm install --no-frozen-lockfile
+
+      - name: Verify tag matches package.json version (H-03)
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(jq -r .version packages/create-app/package.json)
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION != packages/create-app/package.json $PKG_VERSION"
+            echo "::error::Run 'pnpm changeset version' to bump package.json before tagging."
+            exit 1
+          fi
+          echo "Tag v$TAG_VERSION matches packages/create-app/package.json v$PKG_VERSION"
+
+      - run: pnpm --filter @takuma-hirai/create-app build
+      # NOTE: --no-git-checks は CI で --no-frozen-lockfile で install すると lockfile が
+      # 生成されて working tree が dirty 化するため、git-clean check を opt-out。
+      # 次回以降 root pnpm-lock.yaml を commit すれば不要。
+      - run: pnpm --filter @takuma-hirai/create-app publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

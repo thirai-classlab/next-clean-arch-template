@@ -1,0 +1,9 @@
+# Monorepo workspace config for next-clean-arch-template
+#
+# - packages/create-app は CLI source (`@takuma-hirai/create-app`)。
+# - template/ は giget が fetch する Next.js skeleton。template 自体は publish しないが、
+#   `pnpm install` で dep を warm しておくと dependabot watch + local test がしやすい。
+#   template が CLI 依存と干渉する場合は `'!template'` で除外する。
+packages:
+  - 'packages/*'
+  - 'template'

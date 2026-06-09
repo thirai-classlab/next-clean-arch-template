@@ -1,0 +1,43 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# NOTE (monorepo recovery v0.1.1):
+# - workflows は repo root に置く必要あり。
+# - pnpm workspace 構成のため `pnpm install` は root で 1 度。
+# - test / type-check / build は `pnpm --filter @takuma-hirai/create-app` で CLI package のみに絞る
+#   (template/ は実 build せず、CLI 経由 fetch されるため CI build 不要)。
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # NOTE: cache: pnpm は lockfile 不在のため初回は付けない。
+
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm --filter @takuma-hirai/create-app type-check
+      - run: pnpm --filter @takuma-hirai/create-app test
+      - run: pnpm --filter @takuma-hirai/create-app build
+
+      - name: Verify changeset file presence (H-02)
+        if: github.event_name == 'pull_request'
+        run: |
+          # NOTE: changesets は monorepo root の `.changeset/*.md` で管理。
+          # PR diff に `.changeset/<slug>.md` が含まれていれば OK。
+          CHANGED=$(gh pr view ${{ github.event.pull_request.number }} \
+            --json files --jq '.files[].path' | grep -E '^\.changeset/.*\.md$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "::error::No .changeset/*.md file added. Run 'pnpm changeset' to create one."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
