@@ -432,7 +432,11 @@ async function registerPrismaRepositories(profile: DeployProfile): Promise<void>
     calendarEventMod,
     webhookEventMod,
   ] = await Promise.all([
-    import('./repositories/prisma/prisma-user.repository'),
+    // 'as string' prevents webpack from statically tracing this path for
+    // vercel/pro profiles where the CLI post-clone step prunes prisma-user.repository.ts.
+    // Safe at runtime: registerPrismaRepositories() is only called when
+    // DEPLOY_PROFILE is vps-next-* / vps-nest-*, where the file always exists.
+    import('./repositories/prisma/prisma-user.repository' as string),
     import('./repositories/in-memory/in-memory-allowed-user.repository'),
     import('./repositories/in-memory/in-memory-audit-log.repository'),
     import('./repositories/in-memory/in-memory-bot.repository'),

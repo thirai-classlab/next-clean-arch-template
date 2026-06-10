@@ -57,13 +57,25 @@ export default async function SignInPage({
     | undefined
 
   if (isVpsNextPostgres) {
-    const vpsActions = await import('@/lib/interfaces/actions/sign-in-vps.action')
-    googleAction = vpsActions.signInWithGoogleVpsAction
-    passwordAction = vpsActions.signInWithPasswordVpsAction
+    // 'as string' prevents webpack from statically tracing this path into the
+    // vercel/pro bundle. For vercel/pro, the CLI post-clone step prunes
+    // sign-in-vps.action.ts, so webpack must not attempt to resolve it at
+    // build time (Module not found). The import is safe at runtime because
+    // this branch is only reached when DEPLOY_PROFILE is a vps-next-* variant.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const vpsActions = await import('@/lib/interfaces/actions/sign-in-vps.action' as string)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    googleAction = vpsActions.signInWithGoogleVpsAction as typeof googleAction
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    passwordAction = vpsActions.signInWithPasswordVpsAction as typeof passwordAction
   } else if (isVpsNestProfile) {
-    const nestActions = await import('@/lib/interfaces/actions/sign-in-vps-nest.action')
-    googleAction = nestActions.signInWithGoogleNestAction
-    passwordAction = nestActions.signInWithPasswordNestAction
+    // Same 'as string' guard for the nest variant.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const nestActions = await import('@/lib/interfaces/actions/sign-in-vps-nest.action' as string)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    googleAction = nestActions.signInWithGoogleNestAction as typeof googleAction
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    passwordAction = nestActions.signInWithPasswordNestAction as typeof passwordAction
   }
 
   // Resolve error from query params (e.g., AccessDenied from NextAuth domain check).
