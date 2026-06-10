@@ -432,11 +432,16 @@ async function registerPrismaRepositories(profile: DeployProfile): Promise<void>
     calendarEventMod,
     webhookEventMod,
   ] = await Promise.all([
-    // 'as string' prevents webpack from statically tracing this path for
-    // vercel/pro profiles where the CLI post-clone step prunes prisma-user.repository.ts.
-    // Safe at runtime: registerPrismaRepositories() is only called when
-    // DEPLOY_PROFILE is vps-next-* / vps-nest-*, where the file always exists.
-    import('./repositories/prisma/prisma-user.repository' as string),
+    // Dual guard: webpackIgnore: true prevents webpack from statically tracing this
+    // path for vercel/pro profiles where the CLI post-clone step prunes
+    // prisma-user.repository.ts. 'as string' makes the specifier opaque to the
+    // TypeScript checker so `next build` type-check does not fail on pruned-file
+    // profiles. Literal-path tracing is the correct default for most imports in
+    // this file but registerPrismaRepositories() is gated behind a vps-only
+    // condition so the runtime path resolves in the Node.js Server Action context.
+    // Safe at runtime: this function is only called when DEPLOY_PROFILE is
+    // vps-next-* / vps-nest-*, where prisma-user.repository.ts always exists.
+    import(/* webpackIgnore: true */ './repositories/prisma/prisma-user.repository' as string),
     import('./repositories/in-memory/in-memory-allowed-user.repository'),
     import('./repositories/in-memory/in-memory-audit-log.repository'),
     import('./repositories/in-memory/in-memory-bot.repository'),

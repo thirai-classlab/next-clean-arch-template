@@ -57,21 +57,24 @@ export default async function SignInPage({
     | undefined
 
   if (isVpsNextPostgres) {
-    // 'as string' prevents webpack from statically tracing this path into the
-    // vercel/pro bundle. For vercel/pro, the CLI post-clone step prunes
-    // sign-in-vps.action.ts, so webpack must not attempt to resolve it at
-    // build time (Module not found). The import is safe at runtime because
-    // this branch is only reached when DEPLOY_PROFILE is a vps-next-* variant.
+    // webpackIgnore: true prevents webpack from statically tracing this path into
+    // the vercel/pro bundle (CLI post-clone prunes sign-in-vps.action.ts there).
+    // 'as string' makes the specifier opaque to the TypeScript checker so that
+    // `tsc --noEmit` (run by `next build`) does not fail with TS2307 on profiles
+    // where the file was pruned. Both guards are needed: webpackIgnore for webpack,
+    // 'as string' for TypeScript.
+    // Safe at runtime: this branch is only reached when DEPLOY_PROFILE is
+    // vps-next-postgres or vps-next-mariadb, where the file always exists.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const vpsActions = await import('@/lib/interfaces/actions/sign-in-vps.action' as string)
+    const vpsActions = await import(/* webpackIgnore: true */ '@/lib/interfaces/actions/sign-in-vps.action' as string)
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     googleAction = vpsActions.signInWithGoogleVpsAction as typeof googleAction
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     passwordAction = vpsActions.signInWithPasswordVpsAction as typeof passwordAction
   } else if (isVpsNestProfile) {
-    // Same 'as string' guard for the nest variant.
+    // Same dual guard for the nest variant.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const nestActions = await import('@/lib/interfaces/actions/sign-in-vps-nest.action' as string)
+    const nestActions = await import(/* webpackIgnore: true */ '@/lib/interfaces/actions/sign-in-vps-nest.action' as string)
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     googleAction = nestActions.signInWithGoogleNestAction as typeof googleAction
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
