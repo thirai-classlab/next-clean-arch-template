@@ -7,6 +7,14 @@
  *
  * Run with: pnpm test:e2e (inside api/)
  */
+// Set environment variables BEFORE importing AppModule, so that ConfigModule.forRoot()
+// reads our test values instead of defaults
+process.env.NODE_ENV = 'test'
+process.env.LOGIN_STRATEGY = 'both'
+process.env.AUTH_GOOGLE_ID = '__disabled__'
+process.env.AUTH_GOOGLE_SECRET = '__disabled__'
+process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
+
 import { Test, TestingModule } from '@nestjs/testing'
 import { INestApplication, ValidationPipe } from '@nestjs/common'
 // eslint-disable-next-line @typescript-eslint/no-require-imports

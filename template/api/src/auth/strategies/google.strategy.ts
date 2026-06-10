@@ -18,8 +18,8 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     private readonly authService: AuthService,
   ) {
     super({
-      clientID: configService.get<string>('AUTH_GOOGLE_ID') ?? '',
-      clientSecret: configService.get<string>('AUTH_GOOGLE_SECRET') ?? '',
+      clientID: configService.get<string>('AUTH_GOOGLE_ID') || '__disabled__',
+      clientSecret: configService.get<string>('AUTH_GOOGLE_SECRET') || '__disabled__',
       callbackURL:
         (configService.get<string>('NEST_API_URL') ?? 'http://localhost:3001') +
         '/auth/google/callback',
