@@ -30,6 +30,18 @@ describe('instrumentation.register() — MOCK_MODE production guard (S-01)', () 
     await expect(mod.register()).rejects.toThrow(/\[SEC\]/)
   })
 
+  it('throws when NODE_ENV=production AND MOCK_MODE=true AND DEPLOY_PROFILE=vps-next-postgres (build-time exception must NOT extend to runtime)', async () => {
+    // env-schema refinement 4 permits vps-next-postgres + MOCK_MODE=true for
+    // build-time verification. This test pins that the runtime guard still
+    // refuses to boot in that combination (mock auth bypass guard).
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('MOCK_MODE', 'true')
+    vi.stubEnv('DEPLOY_PROFILE', 'vps-next-postgres')
+
+    const mod = await import('./instrumentation')
+    await expect(mod.register()).rejects.toThrow(/\[SEC\].*vps-next-postgres/s)
+  })
+
   it('does not throw when NODE_ENV=production AND MOCK_MODE unset', async () => {
     vi.stubEnv('NODE_ENV', 'production')
     vi.stubEnv('MOCK_MODE', '')

@@ -1,0 +1,74 @@
+# docker-compose.mariadb.yml
+# VPS deploy: Next.js app + MariaDB 11
+# Usage: docker compose -f docker-compose.mariadb.yml up -d
+#
+# Prerequisites:
+#   1. Copy .env.mariadb.example to .env and fill in secrets.
+#   2. Run: pnpm prisma migrate deploy --schema prisma/mariadb/schema.prisma
+#   3. Run: pnpm db:seed:mariadb
+#
+# Port note: 3306 is occupied on the host per setup (port_3306_free: false in recon).
+# MariaDB is bound to 127.0.0.1:3307 for local access from migrate/seed commands.
+# Inside the Docker network the app connects to mariadb:3306 (container port).
+#
+# Environment variables are loaded from .env file by Docker Compose automatically.
+
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_USER: ${MARIADB_USER:-appuser}
+      # MARIADB_PASSWORD is REQUIRED — set it in .env.
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-appdb}
+      # MARIADB_ROOT_PASSWORD is REQUIRED — set it in .env.
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      # Loopback-only binding on 3307 (3306 is occupied on this host).
+      # Lets the host run `prisma migrate deploy` / `prisma db seed` against
+      # localhost:3307 (the DATABASE_URL in .env.mariadb.example host path)
+      # WITHOUT exposing MariaDB to the network.
+      - '127.0.0.1:3307:3306'
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      # Inside the Docker network the app connects to mariadb:3306 (container port).
+      DATABASE_URL: mysql://${MARIADB_USER:-appuser}:${MARIADB_PASSWORD}@mariadb:3306/${MARIADB_DATABASE:-appdb}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      LOGIN_STRATEGY: ${LOGIN_STRATEGY:-both}
+      DEPLOY_PROFILE: vps-next-mariadb
+      MOCK_MODE: 'false'
+      RATE_LIMIT_ENABLED: 'true'
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    networks:
+      - app_net
+
+volumes:
+  mariadb_data:
+
+networks:
+  app_net:
+    driver: bridge

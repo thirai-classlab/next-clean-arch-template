@@ -9,6 +9,10 @@
 // `signInWithPasswordAction(prevState, formData)` (sign-in.action.ts) is
 // rate-limited and establishes the MOCK session via the mock_session cookie.
 //
+// vps-next-postgres: accepts optional `passwordAction` prop from parent
+// (Server Component). When provided, useFormState uses the VPS action instead
+// of signInWithPasswordAction. No UI changes — the form renders identically.
+//
 // Security:
 //   - password input uses type=password / autocomplete=current-password and is
 //     uncontrolled (FormData only) — never lifted into React state (H-4).
@@ -37,8 +41,21 @@ function SubmitButton() {
   )
 }
 
-export function EmailPasswordForm() {
-  const [state, formAction] = useFormState(signInWithPasswordAction, INITIAL_STATE)
+interface EmailPasswordFormProps {
+  /**
+   * Profile-specific Server Action for password sign-in.
+   * When provided (vps-next-postgres), this replaces signInWithPasswordAction.
+   * When undefined, the default signInWithPasswordAction is used.
+   */
+  passwordAction?: (
+    prevState: SignInWithPasswordState | null,
+    formData: FormData,
+  ) => Promise<SignInWithPasswordState>
+}
+
+export function EmailPasswordForm({ passwordAction }: EmailPasswordFormProps = {}) {
+  const action = passwordAction ?? signInWithPasswordAction
+  const [state, formAction] = useFormState(action, INITIAL_STATE)
   // Mirror server error into local state so a fresh submit can clear it before
   // the action resolves (avoids a stale error flashing during the next attempt).
   const [visibleError, setVisibleError] = useState<string | undefined>(undefined)

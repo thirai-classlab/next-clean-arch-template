@@ -33,21 +33,10 @@ import { injectable } from 'tsyringe'
 import type { AuthPort } from '../../../application/ports/auth.port'
 import { ok, err, type Result } from '../../../application/result'
 import { AuthorizationError, ExternalServiceError } from '../../../domain/errors'
-import { ROLES, type Role } from '../../../domain/value-objects/role'
+import { toRole, type Role } from '../../../domain/value-objects/role'
 import { createClient } from '@/lib/supabase/server'
 
 const SERVICE = 'supabase-auth'
-
-/**
- * Narrow an unknown `role` column value to a valid `Role`, or `null`.
- * public.users.role may be NULL (row not yet provisioned) or an out-of-union
- * string; both are treated as "no role" so callers never see an invalid Role.
- */
-function toRole(value: unknown): Role | null {
-  return typeof value === 'string' && (ROLES as readonly string[]).includes(value)
-    ? (value as Role)
-    : null
-}
 
 @injectable()
 export class SupabaseAuthAdapter implements AuthPort {

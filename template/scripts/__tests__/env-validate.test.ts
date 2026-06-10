@@ -212,7 +212,7 @@ describe('adminEnvSchema', () => {
 
 describe('deploymentEnvSchema', () => {
   it('valid な enum 値を accept する', () => {
-    for (const profile of ['minimal', 'unlocked', 'pro', 'vps'] as const) {
+    for (const profile of ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'] as const) {
       const result = deploymentEnvSchema.safeParse({
         DEPLOY_PROFILE: profile,
         MOCK_MODE: 'true',
@@ -533,6 +533,90 @@ describe('fullEnvSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  // ── vps-next-postgres profile (refinement 3 skip + refinement 7) ──────
+  // vps-next-postgres は NextAuth 系 (AUTH_GOOGLE_ID/SECRET) を使い、Supabase 系
+  // GOOGLE_OAUTH_CLIENT_* / Supabase 3 var を一切参照しない。refinement 3/6 は
+  // skip され、refinement 7 が DATABASE_URL / NEXTAUTH_* + (SSO 時) AUTH_GOOGLE_*
+  // を必須化する。
+
+  /** vps-next-postgres + MOCK_MODE=false の valid なベース値 (sso) */
+  const validVpsEnv = {
+    DEPLOY_PROFILE: 'vps-next-postgres',
+    MOCK_MODE: 'false',
+    LOGIN_STRATEGY: 'sso',
+    DATABASE_URL: 'postgresql://appuser:secret@localhost:5432/appdb',
+    NEXTAUTH_SECRET: 's'.repeat(32),
+    NEXTAUTH_URL: 'https://app.example.com',
+    AUTH_GOOGLE_ID: 'vps-google-client-id',
+    AUTH_GOOGLE_SECRET: 'vps-google-client-secret',
+    RECALL_API_KEY: 'recall-key-xxxxx', // refinement 1 (MOCK_MODE=false)
+  }
+
+  it('(vps-a) vps-next-postgres + MOCK_MODE=true は他 var 全不在でも success (refinement 4 例外、build-time 検証)', () => {
+    const env = {
+      DEPLOY_PROFILE: 'vps-next-postgres',
+      MOCK_MODE: 'true',
+    }
+    const result = fullEnvSchema.safeParse(env)
+    expect(result.success).toBe(true)
+  })
+
+  it('(vps-b) vps-next-postgres + sso + MOCK_MODE=false は GOOGLE_OAUTH_CLIENT_* 不在でも success (refinement 3 skip)', () => {
+    // AUTH_GOOGLE_* (NextAuth 系) のみ設定。Supabase 系 GOOGLE_OAUTH_CLIENT_* と
+    // Supabase 3 var は不在 — refinement 3/6 が vps-next-postgres を skip する回帰 pin。
+    const result = fullEnvSchema.safeParse(validVpsEnv)
+    expect(result.success).toBe(true)
+  })
+
+  it('(vps-c) vps-next-postgres + sso + MOCK_MODE=false + AUTH_GOOGLE_* 不在で error (refinement 7、GOOGLE_OAUTH_CLIENT_* は要求しない)', () => {
+    const { AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, ...rest } =
+      validVpsEnv satisfies typeof validVpsEnv
+    const result = fullEnvSchema.safeParse(rest)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const paths = result.error.errors.map((e) => e.path[0])
+      expect(paths).toContain('AUTH_GOOGLE_ID')
+      expect(paths).toContain('AUTH_GOOGLE_SECRET')
+      // Supabase 系フィールドを誤って要求しない (HIGH: 起動不能 bug の回帰 pin)
+      expect(paths).not.toContain('GOOGLE_OAUTH_CLIENT_ID')
+      expect(paths).not.toContain('GOOGLE_OAUTH_CLIENT_SECRET')
+    }
+  })
+
+  it('(vps-d) vps-next-postgres + MOCK_MODE=false + 基盤 3 var 不在で error (refinement 7)', () => {
+    const { DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL, ...rest } =
+      validVpsEnv satisfies typeof validVpsEnv
+    const result = fullEnvSchema.safeParse(rest)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const paths = result.error.errors.map((e) => e.path[0])
+      expect(paths).toContain('DATABASE_URL')
+      expect(paths).toContain('NEXTAUTH_SECRET')
+      expect(paths).toContain('NEXTAUTH_URL')
+    }
+  })
+
+  it('(vps-e) vps-next-postgres + email-pass + MOCK_MODE=false は AUTH_GOOGLE_* 不在でも success (SSO なし)', () => {
+    const { AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, ...rest } =
+      validVpsEnv satisfies typeof validVpsEnv
+    const env = {
+      ...rest,
+      LOGIN_STRATEGY: 'email-pass',
+      RATE_LIMIT_ENABLED: 'true', // refinement 5
+    }
+    const result = fullEnvSchema.safeParse(env)
+    expect(result.success).toBe(true)
+  })
+
+  it('(vps-f) vps-next-postgres + MOCK_MODE=false は Supabase 3 var + INITIAL_ADMIN_EMAIL 不要 (refinement 6 skip)', () => {
+    const result = fullEnvSchema.safeParse(validVpsEnv)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.NEXT_PUBLIC_SUPABASE_URL).toBeUndefined()
+      expect(result.data.INITIAL_ADMIN_EMAIL).toBeUndefined()
+    }
+  })
+
   it('email-pass + RATE_LIMIT_ENABLED!=true で error (refinement 5 guard)', () => {
     const { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, ...rest } =
       validEnv satisfies typeof validEnv
@@ -571,6 +655,84 @@ describe('fullEnvSchema', () => {
     if (!result.success) {
       const paths = result.error.errors.map((e) => e.path[0])
       expect(paths).toContain('GOOGLE_OAUTH_CLIENT_ID')
+    }
+  })
+
+  // ── vps-next-mariadb profile (refinement 8) ──────────────────────────
+  // Mirror of vps-next-postgres tests (vps-a through vps-f) for the MariaDB variant.
+  // Key difference: DATABASE_URL must use mysql:// scheme (refinement 8 shape check).
+
+  /** vps-next-mariadb + MOCK_MODE=false の valid なベース値 (sso) */
+  const validMariadbEnv = {
+    DEPLOY_PROFILE: 'vps-next-mariadb',
+    MOCK_MODE: 'false',
+    LOGIN_STRATEGY: 'sso',
+    DATABASE_URL: 'mysql://appuser:secret@localhost:3307/appdb',
+    NEXTAUTH_SECRET: 's'.repeat(32),
+    NEXTAUTH_URL: 'https://app.example.com',
+    AUTH_GOOGLE_ID: 'mariadb-google-client-id',
+    AUTH_GOOGLE_SECRET: 'mariadb-google-client-secret',
+    RECALL_API_KEY: 'recall-key-xxxxx', // refinement 1 (MOCK_MODE=false)
+  }
+
+  it('(mariadb-a) vps-next-mariadb + MOCK_MODE=true は他 var 全不在でも success (refinement 4 例外、build-time 検証)', () => {
+    const env = {
+      DEPLOY_PROFILE: 'vps-next-mariadb',
+      MOCK_MODE: 'true',
+    }
+    const result = fullEnvSchema.safeParse(env)
+    expect(result.success).toBe(true)
+  })
+
+  it('(mariadb-b) vps-next-mariadb + MOCK_MODE=false + mysql:// DATABASE_URL + NEXTAUTH creds は success', () => {
+    const result = fullEnvSchema.safeParse(validMariadbEnv)
+    expect(result.success).toBe(true)
+  })
+
+  it('(mariadb-c) vps-next-mariadb + MOCK_MODE=false + postgresql:// DATABASE_URL は DATABASE_URL error (mysql:// shape guard)', () => {
+    const env = {
+      ...validMariadbEnv,
+      DATABASE_URL: 'postgresql://appuser:secret@localhost:5432/appdb',
+    }
+    const result = fullEnvSchema.safeParse(env)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const paths = result.error.errors.map((e) => e.path[0])
+      expect(paths).toContain('DATABASE_URL')
+    }
+  })
+
+  it('(mariadb-d) vps-next-mariadb + MOCK_MODE=false + 基盤 3 var 不在で error (refinement 8)', () => {
+    const { DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL, ...rest } =
+      validMariadbEnv satisfies typeof validMariadbEnv
+    const result = fullEnvSchema.safeParse(rest)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const paths = result.error.errors.map((e) => e.path[0])
+      expect(paths).toContain('DATABASE_URL')
+      expect(paths).toContain('NEXTAUTH_SECRET')
+      expect(paths).toContain('NEXTAUTH_URL')
+    }
+  })
+
+  it('(mariadb-e) vps-next-mariadb + email-pass + MOCK_MODE=false は AUTH_GOOGLE_* 不在でも success (SSO なし)', () => {
+    const { AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, ...rest } =
+      validMariadbEnv satisfies typeof validMariadbEnv
+    const env = {
+      ...rest,
+      LOGIN_STRATEGY: 'email-pass',
+      RATE_LIMIT_ENABLED: 'true', // refinement 5
+    }
+    const result = fullEnvSchema.safeParse(env)
+    expect(result.success).toBe(true)
+  })
+
+  it('(mariadb-f) vps-next-mariadb + MOCK_MODE=false は Supabase 3 var + INITIAL_ADMIN_EMAIL 不要 (refinement 6 skip)', () => {
+    const result = fullEnvSchema.safeParse(validMariadbEnv)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.NEXT_PUBLIC_SUPABASE_URL).toBeUndefined()
+      expect(result.data.INITIAL_ADMIN_EMAIL).toBeUndefined()
     }
   })
 

@@ -145,9 +145,9 @@ export const adminEnvSchema = z.object({
  */
 export const deploymentEnvSchema = z.object({
   DEPLOY_PROFILE: z
-    .enum(['minimal', 'unlocked', 'pro', 'vps'], {
+    .enum(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'], {
       errorMap: () => ({
-        message: 'Must be one of: minimal, unlocked, pro, vps',
+        message: 'Must be one of: minimal, unlocked, pro, vps, vps-next-postgres, vps-next-mariadb',
       }),
     })
     .default('minimal'),
@@ -194,13 +194,48 @@ export const deploymentEnvSchema = z.object({
     .default(900),
 })
 
+// ── PostgreSQL / NextAuth (vps-next-postgres profile) ─────────────
+/**
+ * postgresEnvSchema — PostgreSQL + NextAuth env vars for vps-next-postgres.
+ *
+ * All fields are optional at the per-field level; conditional required
+ * enforcement is applied via superRefine (refinement 7) when
+ * DEPLOY_PROFILE === 'vps-next-postgres' and MOCK_MODE !== 'true'.
+ *
+ * AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET: NextAuth naming convention aliases for
+ * GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET. NextAuth providers
+ * use AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET by convention.
+ * No format constraints on these (different format from Supabase OAuth vars).
+ *
+ * AUTH_ALLOWED_EMAIL_DOMAIN: optional domain string (e.g. 'example.com').
+ * Absent or empty → no domain restriction. No URL/email format — just a plain
+ * domain segment. Enforced in NextAuth signIn callback (src/auth.ts).
+ */
+export const postgresEnvSchema = z.object({
+  DATABASE_URL: emptyAsUndefined(
+    z.string().url({ message: 'Must be a valid URL' }).optional(),
+  ),
+  NEXTAUTH_SECRET: emptyAsUndefined(
+    z
+      .string()
+      .min(32, { message: 'Must be at least 32 characters' })
+      .optional(),
+  ),
+  NEXTAUTH_URL: emptyAsUndefined(
+    z.string().url({ message: 'Must be a valid URL' }).optional(),
+  ),
+  AUTH_GOOGLE_ID: emptyAsUndefined(z.string().optional()),
+  AUTH_GOOGLE_SECRET: emptyAsUndefined(z.string().optional()),
+  AUTH_ALLOWED_EMAIL_DOMAIN: emptyAsUndefined(z.string().optional()),
+  SEED_PASSWORD: z.string().optional(),
+})
+
 // ── Recall.ai (optional) ──────────────────────────────────────────
 export const recallEnvSchema = z.object({
   RECALL_API_KEY: z.string().optional(),
-  WEBHOOK_PUBLIC_URL: z
-    .string()
-    .url({ message: 'Must be a valid URL' })
-    .optional(),
+  WEBHOOK_PUBLIC_URL: emptyAsUndefined(
+    z.string().url({ message: 'Must be a valid URL' }).optional(),
+  ),
 })
 
 // ── Vercel (optional) ────────────────────────────────────────────
@@ -213,18 +248,26 @@ export const vercelEnvSchema = z.object({
 /**
  * fullEnvSchema — 全 category を merge した統合 schema。
  *
- * refinement (cross-field validation) — 計 5 件:
+ * refinement (cross-field validation) — 計 7 件:
  *   1. MOCK_MODE=false の場合 RECALL_API_KEY が必須。
  *   2. ALLOWED_ADMIN_EMAIL_DOMAIN が指定された場合、INITIAL_ADMIN_EMAIL がそのドメインで終わる必要あり。
  *   3. (task #37) LOGIN_STRATEGY !== 'email-pass' かつ MOCK_MODE !== 'true' の場合、
  *      Google OAuth credentials (CLIENT_ID / SECRET) が必須 (SSO 経路が機能するため)。
  *      MOCK_MODE='true' の場合は LOGIN_STRATEGY 問わず OAuth 不要 (MOCK 完動整合)。
+ *      vps-next-postgres は NextAuth 系 AUTH_GOOGLE_* を使うため対象外 (refinement 7 が担う)。
  *   4. (task #37, H-3) DEPLOY_PROFILE !== 'minimal' かつ MOCK_MODE === 'true' は error。
  *      非 minimal profile (= 本番相当) で MOCK 認証 bypass が有効化されるのを防ぐ。
+ *      例外: vps-next-postgres は build-time 検証用に MOCK_MODE=true を意図的に許可
+ *      (runtime の本番流入は src/instrumentation.ts の fail-fast guard が拒否)。
  *   5. (task #37, security H-R3-1) LOGIN_STRATEGY !== 'sso' かつ
  *      RATE_LIMIT_ENABLED !== 'true' は startup error。email-pass/both は brute-force
  *      対象のため、rate-limit 無効のままの有効化を機械ブロックする
  *      (RATE_LIMIT_ENABLED field は task #36 が deploymentEnvSchema に定義済)。
+ *   6. (P0 fix) MOCK_MODE !== 'true' かつ非 vps-next-postgres は Supabase 3 var +
+ *      INITIAL_ADMIN_EMAIL を必須化。
+ *   7. (vps-next-postgres) DEPLOY_PROFILE=vps-next-postgres かつ MOCK_MODE !== 'true' は
+ *      DATABASE_URL / NEXTAUTH_SECRET / NEXTAUTH_URL を必須化。LOGIN_STRATEGY が SSO を
+ *      含む場合は AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET も必須化。
  *
  * 注意: zod の built-in error message は値を含まないため secret leak のリスクなし。
  * (z.string().min() 等のエラーは "String must contain at least N character(s)" 形式)
@@ -239,6 +282,7 @@ export const fullEnvSchema = supabaseEnvSchema
   .merge(deploymentEnvSchema)
   .merge(recallEnvSchema)
   .merge(vercelEnvSchema)
+  .merge(postgresEnvSchema)
   .superRefine((data, ctx) => {
     // refinement 1: MOCK_MODE=false 時は RECALL_API_KEY 必須
     if (data.MOCK_MODE === 'false' && !data.RECALL_API_KEY) {
@@ -264,7 +308,14 @@ export const fullEnvSchema = supabaseEnvSchema
     // refinement 3 (task #37): SSO 経路 (sso / both) で MOCK_MODE !== 'true' の場合、
     // Google OAuth credentials を必須化。oauthEnvSchema の individual optional 化を補う。
     // MOCK_MODE='true' は OAuth 不要 (MockAuthAdapter で完動)。
+    //
+    // vps-next-postgres は NextAuth (AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET) を使い、
+    // Supabase 系の GOOGLE_OAUTH_CLIENT_* は一切参照しないため本 refinement の対象外
+    // (skip しないと「AUTH_GOOGLE_ID を設定したのに GOOGLE_OAUTH_CLIENT_ID 必須 error
+    // で起動不能」になる)。vps-next-postgres の SSO credential 必須化は refinement 7 が担う。
     if (
+      data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-next-mariadb' &&
       data.LOGIN_STRATEGY !== 'email-pass' &&
       data.MOCK_MODE !== 'true'
     ) {
@@ -287,11 +338,17 @@ export const fullEnvSchema = supabaseEnvSchema
     }
     // refinement 4 (task #37, H-3): 非 minimal profile での MOCK_MODE=true を禁止。
     // 本番相当の profile で MOCK 認証 bypass が有効化される事故を防ぐ。
-    if (data.DEPLOY_PROFILE !== 'minimal' && data.MOCK_MODE === 'true') {
+    // 例外: vps-next-postgres / vps-next-mariadb は mock adapter (DB 不要) で
+    // ビルド検証するため許可する (runtime の本番流入は src/instrumentation.ts が拒否)。
+    // vps-next-postgres and vps-next-mariadb are intentionally excluded from
+    // profilesForbiddingMock — MOCK_MODE=true is allowed for build-time verification;
+    // runtime production guard is in src/instrumentation.ts.
+    const profilesForbiddingMock: string[] = ['unlocked', 'pro', 'vps']
+    if (profilesForbiddingMock.includes(data.DEPLOY_PROFILE) && data.MOCK_MODE === 'true') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'MOCK_MODE=true is only allowed with DEPLOY_PROFILE=minimal (auth bypass guard)',
+          'MOCK_MODE=true is only allowed with DEPLOY_PROFILE=minimal, vps-next-postgres, or vps-next-mariadb (auth bypass guard)',
         path: ['MOCK_MODE'],
       })
     }
@@ -313,7 +370,12 @@ export const fullEnvSchema = supabaseEnvSchema
     // supabaseEnvSchema / adminEnvSchema 側で optional 化したのを補い、MOCK_MODE=true
     // (fresh checkout demo) のときだけ未指定を許す。MOCK_MODE=true なら本 refinement は
     // 発火せず、4 var 不在でも success (CLAUDE.md 中核制約「API key 無しデモ」の復元)。
-    if (data.MOCK_MODE !== 'true') {
+    // vps-next-postgres profile は Supabase 不使用 — Supabase var 不要 (refinement 7 で補完)。
+    if (
+      data.MOCK_MODE !== 'true' &&
+      data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-next-mariadb'
+    ) {
       const requiredInRealMode = [
         'NEXT_PUBLIC_SUPABASE_URL',
         'NEXT_PUBLIC_SUPABASE_ANON_KEY',
@@ -327,6 +389,112 @@ export const fullEnvSchema = supabaseEnvSchema
             message: `${field} is required when MOCK_MODE is not "true"`,
             path: [field],
           })
+        }
+      }
+    }
+    // refinement 7: vps-next-postgres profile での必須 var チェック。
+    //
+    // 注意: refinement 4 は vps-next-postgres + MOCK_MODE=true を **意図的に許可**
+    // している (profilesForbiddingMock から除外、build-time / CI のビルド検証用)。
+    // 本 refinement は MOCK_MODE !== 'true' (= 実 deploy mode) のときだけ発火する。
+    // runtime での MOCK_MODE=true + NODE_ENV=production は src/instrumentation.ts の
+    // fail-fast guard が起動を拒否する (mock auth bypass の本番流入防止)。
+    //
+    // 必須化の内訳:
+    //   - DATABASE_URL / NEXTAUTH_SECRET / NEXTAUTH_URL: profile の基盤 3 var。
+    //   - AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET: LOGIN_STRATEGY が SSO を含む
+    //     (sso / both) 場合のみ必須。NextAuth は AUTH_GOOGLE_* 命名を使うため、
+    //     Supabase 系 GOOGLE_OAUTH_CLIENT_* を検査する refinement 3 では代替できない
+    //     (refinement 3 は vps-next-postgres を skip する)。
+    if (
+      data.DEPLOY_PROFILE === 'vps-next-postgres' &&
+      data.MOCK_MODE !== 'true'
+    ) {
+      const requiredForVpsNextPostgres = [
+        'DATABASE_URL',
+        'NEXTAUTH_SECRET',
+        'NEXTAUTH_URL',
+      ] as const
+      for (const field of requiredForVpsNextPostgres) {
+        if (!data[field]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field} is required when DEPLOY_PROFILE=vps-next-postgres and MOCK_MODE is not "true"`,
+            path: [field],
+          })
+        }
+      }
+      // SSO を含む LOGIN_STRATEGY (sso / both) では NextAuth Google provider の
+      // credentials が必須。未設定だと NextAuth は空文字 clientId で起動し、
+      // sign-in 時にしか失敗が顕在化しないため startup validation で止める。
+      if (data.LOGIN_STRATEGY !== 'email-pass') {
+        const requiredForSso = ['AUTH_GOOGLE_ID', 'AUTH_GOOGLE_SECRET'] as const
+        for (const field of requiredForSso) {
+          if (!data[field]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${field} is required when DEPLOY_PROFILE=vps-next-postgres, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
+              path: [field],
+            })
+          }
+        }
+      }
+    }
+    // refinement 8: vps-next-mariadb profile での必須 var チェック。
+    //
+    // Mirror of refinement 7 for the MariaDB variant. Identical auth stack
+    // (NextAuth v5 JWT strategy), only the database provider differs.
+    //
+    // 注意: refinement 4 は vps-next-mariadb + MOCK_MODE=true を意図的に許可
+    // (profilesForbiddingMock から除外、build-time / CI のビルド検証用)。
+    // 本 refinement は MOCK_MODE !== 'true' (= 実 deploy mode) のときだけ発火する。
+    //
+    // Additional DATABASE_URL shape check: if DATABASE_URL is present but does NOT
+    // start with 'mysql://' or 'mysql+srv://', emit a custom issue explaining the
+    // mysql:// requirement (prevents accidentally using a postgresql:// URL here).
+    if (
+      data.DEPLOY_PROFILE === 'vps-next-mariadb' &&
+      data.MOCK_MODE !== 'true'
+    ) {
+      const requiredForVpsNextMariadb = [
+        'DATABASE_URL',
+        'NEXTAUTH_SECRET',
+        'NEXTAUTH_URL',
+      ] as const
+      for (const field of requiredForVpsNextMariadb) {
+        if (!data[field]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field} is required when DEPLOY_PROFILE=vps-next-mariadb and MOCK_MODE is not "true"`,
+            path: [field],
+          })
+        }
+      }
+      // DATABASE_URL shape check: must use mysql:// scheme for MariaDB.
+      if (
+        data.DATABASE_URL &&
+        !data.DATABASE_URL.startsWith('mysql://') &&
+        !data.DATABASE_URL.startsWith('mysql+srv://')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'DATABASE_URL must use the mysql:// scheme for vps-next-mariadb profile (e.g. mysql://user:pass@host:3307/db)',
+          path: ['DATABASE_URL'],
+        })
+      }
+      // SSO を含む LOGIN_STRATEGY (sso / both) では NextAuth Google provider の
+      // credentials が必須 (refinement 7 と同一ロジック)。
+      if (data.LOGIN_STRATEGY !== 'email-pass') {
+        const requiredForSso = ['AUTH_GOOGLE_ID', 'AUTH_GOOGLE_SECRET'] as const
+        for (const field of requiredForSso) {
+          if (!data[field]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${field} is required when DEPLOY_PROFILE=vps-next-mariadb, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
+              path: [field],
+            })
+          }
         }
       }
     }

@@ -1,0 +1,92 @@
+// prisma/schema.prisma
+// vps-next-postgres profile — NextAuth v5 (Auth.js) + Prisma 7
+// JWT session strategy: Session and VerificationToken models are OMITTED.
+// Only Account is needed for OAuth provider linking (Google → same Prisma User).
+//
+// Rationale for omitting Session model: JWT strategy stores all session state
+// in a signed HttpOnly cookie (NEXTAUTH_SECRET). The database never stores
+// active sessions, so no Session table is needed. This simplifies the schema,
+// removes a hot-path DB write on every request, and is the Auth.js recommended
+// approach for self-hosted deployments where Redis is not available.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Role enum mirrors domain/value-objects/role.ts ROLES const.
+// 'pending' is NOT a Role — it is UserStatus. The DB column is role only.
+enum Role {
+  admin
+  member
+  viewer
+}
+
+enum UserStatus {
+  pending
+  approved
+  rejected
+  suspended
+}
+
+// User — application user with role, optional passwordHash (null for Google-only),
+// optional name/image from OAuth profile.
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String?    // null for Google-only accounts; bcrypt hash for credentials users
+  role         Role       @default(member)
+  status       UserStatus @default(pending)
+  name         String?
+  image        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // NextAuth: one user can link multiple OAuth providers (e.g., Google + future GitHub)
+  accounts    Account[]
+  auditLogsBy AuditLog[] @relation("performedBy")
+
+  @@map("users")
+}
+
+// Account — NextAuth OAuth provider linking.
+// Required for OAuth flows even with JWT session strategy (stores provider tokens
+// for token refresh and prevents duplicate account creation on re-login).
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// AuditLog — admin actions (role changes, user approval/rejection).
+// Kept as a standalone table rather than JSON blob for queryability.
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String   // e.g. "role_changed", "user_approved", "user_rejected"
+  targetId    String   // userId of the subject
+  performedBy String   // userId of the admin
+  metadata    Json?    // additional context (old role, new role, etc.)
+  createdAt   DateTime @default(now())
+
+  performer User @relation("performedBy", fields: [performedBy], references: [id], onDelete: Restrict)
+
+  @@map("audit_logs")
+}

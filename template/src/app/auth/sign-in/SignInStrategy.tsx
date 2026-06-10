@@ -10,30 +10,47 @@
 // `both` is a controlled Tabs so we can remount the EmailPasswordForm whenever
 // the user leaves the email-pass tab (newValue !== 'email-pass'), clearing any
 // password text from the DOM (security MEDIUM-02 / ui LOW-R3-2).
+//
+// vps-next-postgres: optional `googleAction` and `passwordAction` props allow
+// the Server Component parent (sign-in/page.tsx) to inject profile-specific
+// Server Actions. When undefined, the default Supabase/MOCK actions are used.
+// This keeps all UI components profile-agnostic.
 
 import { useState } from 'react'
 import { Tabs } from '@/components/ui/composite/Tabs'
 import { GoogleSignInButton } from './GoogleSignInButton'
 import { EmailPasswordForm } from './EmailPasswordForm'
+import type { SignInWithPasswordState } from '@/lib/interfaces/actions/sign-in.action'
 
 export type LoginMethods = 'sso' | 'email-pass' | 'both'
 
 interface SignInStrategyProps {
   loginMethods: LoginMethods
+  /** Profile-specific Google action (vps-next-postgres). Undefined → default action. */
+  googleAction?: () => Promise<void>
+  /** Profile-specific password action (vps-next-postgres). Undefined → default action. */
+  passwordAction?: (
+    prevState: SignInWithPasswordState | null,
+    formData: FormData,
+  ) => Promise<SignInWithPasswordState>
 }
 
-export function SignInStrategy({ loginMethods }: SignInStrategyProps) {
+export function SignInStrategy({
+  loginMethods,
+  googleAction,
+  passwordAction,
+}: SignInStrategyProps) {
   // Remount key for the email-pass form: bumped when the user leaves the
   // email-pass tab so the password field is dropped from the DOM.
   const [formKey, setFormKey] = useState(0)
   const [activeTab, setActiveTab] = useState<string>('sso')
 
   if (loginMethods === 'sso') {
-    return <GoogleSignInButton />
+    return <GoogleSignInButton googleAction={googleAction} />
   }
 
   if (loginMethods === 'email-pass') {
-    return <EmailPasswordForm />
+    return <EmailPasswordForm passwordAction={passwordAction} />
   }
 
   // 'both'
@@ -53,12 +70,12 @@ export function SignInStrategy({ loginMethods }: SignInStrategyProps) {
         {
           value: 'sso',
           label: 'Google SSO',
-          content: <GoogleSignInButton />,
+          content: <GoogleSignInButton googleAction={googleAction} />,
         },
         {
           value: 'email-pass',
           label: 'Email / Password',
-          content: <EmailPasswordForm key={formKey} />,
+          content: <EmailPasswordForm key={formKey} passwordAction={passwordAction} />,
         },
       ]}
     />

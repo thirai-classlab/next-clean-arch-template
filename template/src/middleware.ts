@@ -24,6 +24,7 @@ import {
   getSessionStatus,
   updateSession,
 } from '@/lib/supabase/middleware'
+import { getNextAuthSessionRole } from '@/lib/supabase/middleware-vps'
 
 // task-5 Step 2: pending status の user を承認待ち page へ誘導する際、
 // redirect loop を避けるため判定を skip する path prefix。
@@ -73,20 +74,40 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   }
 
   // task-5 Step 4: /admin/* gate の role 解決 (draft 08 §Phase 4 / Step 4.2、NEW-N-01)。
-  // 真の role は Supabase session (getUser() + public.users SELECT) を優先する。
-  // getSessionRole は Supabase 未設定 / 未ログイン / Step 3 前の未作成時に null を返すため、
-  // その場合は MOCK_MODE 用の mock_session cookie へ fallback する。
-  // どちらも無い場合 role=null のまま → decideMiddleware rule1 が /auth/sign-in?next= へ
-  // redirect する (= 未認証は確実に guard される。dev でも未ログインなら admin にならない)。
+  // vps-next-postgres profile: getNextAuthSessionRole() で NextAuth JWT から role を解決。
+  // 他 profile: Supabase session (getUser() + public.users SELECT) を優先し、
+  // getSessionRole が null なら MOCK_MODE 用の mock_session cookie へ fallback する。
   //
   // task-5 Step 7 Round-3 A MEDIUM-N4: mock_session cookie は NODE_ENV guard で production では
   // 必ず null にする。production では .env.production に意図せず mock_session が設定されても無効化される。
-  const supabaseRole = await getSessionRole(request)
-  const cookieRole =
-    process.env.NODE_ENV !== 'production'
-      ? (request.cookies.get('mock_session')?.value ?? null)
-      : null
-  const role = supabaseRole ?? cookieRole
+  //
+  // vps-next-postgres: DEPLOY_PROFILE env を Edge runtime で読む。
+  //   - getNextAuthSessionRole() は next-auth/jwt getToken() (Edge-safe, Prisma 不使用) で
+  //     JWT を decrypt して role を返す。
+  //   - updateSession (Supabase) の呼び出しは profile 問わず先頭で実行済み。
+  //     Supabase env 未設定時は updateSession 内で graceful skip されるため問題なし。
+  //   - getSessionStatus() (Supabase pending check) は vps-next-postgres では null を返すため
+  //     pending redirect は発火しない (= behavior-preserving)。
+  // Both vps-next-postgres and vps-next-mariadb use NextAuth v5 JWT strategy.
+  // The role is resolved from the NextAuth JWT cookie (Edge-safe, no Supabase).
+  const isVpsNextAuthProfile =
+    process.env.DEPLOY_PROFILE === 'vps-next-postgres' ||
+    process.env.DEPLOY_PROFILE === 'vps-next-mariadb'
+
+  let role: string | null
+  if (isVpsNextAuthProfile) {
+    // vps-next-postgres / vps-next-mariadb: read role from NextAuth JWT cookie.
+    role = await getNextAuthSessionRole(request)
+  } else {
+    // Supabase path (all other profiles): Supabase session takes priority,
+    // then fall back to mock_session cookie for dev/MOCK_MODE.
+    const supabaseRole = await getSessionRole(request)
+    const cookieRole =
+      process.env.NODE_ENV !== 'production'
+        ? (request.cookies.get('mock_session')?.value ?? null)
+        : null
+    role = supabaseRole ?? cookieRole
+  }
   const decision = decideMiddleware({
     pathname: request.nextUrl.pathname,
     role,

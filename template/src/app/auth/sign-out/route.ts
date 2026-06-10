@@ -27,18 +27,67 @@
 //  middleware.ts の env early-exit と整合させ、Supabase teardown を
 //  env 存在チェック + try-catch で囲い、Supabase 不在/失敗でも必ず
 //  mock_session 失効 + redirect に到達させる。
+//
+// vps-next-postgres / vps-next-mariadb: when DEPLOY_PROFILE is either NextAuth
+//  profile, call NextAuth signOut({ redirect: false }) to invalidate the JWT
+//  session cookie. Both profiles share the identical NextAuth v5 JWT session
+//  stack (only the database provider differs), so the teardown must fire for
+//  both — otherwise a signed-out user's JWT cookie stays valid until natural
+//  expiry (HIGH fix; mirrors middleware.ts / sign-in/page.tsx).
+//  The mock_session cookie clearing still runs (no-op if not set, safe).
+//  Supabase signOut is skipped when Supabase env vars are absent.
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
+import { getValidatedEnv } from '@/lib/env'
 
 // MOCK_MODE session SSoT cookie 名 (sign-in.action.ts MOCK_SESSION_COOKIE と一致)。
 const MOCK_SESSION_COOKIE = 'mock_session'
 
+// Deploy profiles that use the NextAuth v5 JWT session stack — their session
+// cookie must be torn down via NextAuth signOut() on logout.
+const NEXTAUTH_PROFILES: ReadonlyArray<string> = [
+  'vps-next-postgres',
+  'vps-next-mariadb',
+]
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // Supabase session teardown。純 MOCK_MODE (env 未設定) では createServerClient が
-  // 同期 throw するため、env 存在を確認してから呼び、さらに try-catch で囲って
-  // network 失敗等でも必ず後続の mock_session 失効 + redirect に到達させる
+  // ── vps-next-postgres / vps-next-mariadb: NextAuth session teardown ──────
+  // NextAuth signOut() clears the JWT session cookie (__Secure-authjs.session-token
+  // in production, authjs.session-token in dev). redirect: false so we control
+  // the redirect ourselves below.
+  //
+  // DEPLOY_PROFILE is resolved via getValidatedEnv() (schema SSoT — same as
+  // sign-in/page.tsx) rather than raw process.env. getValidatedEnv() throws on
+  // invalid env, but sign-out must stay graceful (the mock_session cleanup
+  // below has to run no matter what), so fall back to the raw env on failure.
+  let isNextAuthProfile: boolean
+  try {
+    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
+      getValidatedEnv().DEPLOY_PROFILE,
+    )
+  } catch {
+    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
+      process.env.DEPLOY_PROFILE ?? '',
+    )
+  }
+  if (isNextAuthProfile) {
+    try {
+      const { signOut } = await import('@/auth')
+      await signOut({ redirect: false })
+    } catch {
+      // NextAuth signOut failure — continue to cookie cleanup + redirect.
+      // This can happen if NEXTAUTH_SECRET is missing (misconfiguration) or
+      // the cookie is already invalid/expired.
+    }
+  }
+
+  // ── Supabase session teardown ─────────────────────────────────────────────
+  // Supabase signOut は Supabase 系 cookie しか消さないため、env 存在確認してから呼ぶ。
+  // 純 MOCK_MODE (env 未設定) では createServerClient が同期 throw するため、
+  // env 存在を確認してから呼び、さらに try-catch で囲って network 失敗等でも
+  // 必ず後続の mock_session 失効 + redirect に到達させる
   // (middleware.ts:51-53 の env early-exit と同方針)。
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY

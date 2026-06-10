@@ -89,15 +89,15 @@ const MINIMAL_REPO_BINDINGS = [
 ] as const
 
 describe('Profile switch — mapping completeness', () => {
-  it('exposes exactly 4 Deploy Profiles', () => {
-    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps'])
+  it('exposes exactly 6 Deploy Profiles (4 original + vps-next-postgres + vps-next-mariadb)', () => {
+    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'])
   })
 
   it('exposes exactly 16 Port names', () => {
     expect(PORT_NAMES).toHaveLength(16)
   })
 
-  it('defines all 4 × 16 = 64 adapter bindings as non-empty class-name strings', () => {
+  it('defines all 6 × 16 = 96 adapter bindings as non-empty class-name strings', () => {
     const profiles = DEPLOY_PROFILES as ReadonlyArray<DeployProfile>
     let count = 0
     for (const profile of profiles) {
@@ -109,7 +109,7 @@ describe('Profile switch — mapping completeness', () => {
         count += 1
       }
     }
-    expect(count).toBe(64)
+    expect(count).toBe(96)
   })
 
   it('each profile mapping is frozen (immutable per draft 06 §3.2)', () => {
@@ -126,6 +126,8 @@ describe('Profile switch — DEPLOY_PROFILE env resolution', () => {
     ['unlocked', 'unlocked'],
     ['pro', 'pro'],
     ['vps', 'vps'],
+    ['vps-next-postgres', 'vps-next-postgres'],
+    ['vps-next-mariadb', 'vps-next-mariadb'],
   ])('resolveDeployProfile(%s) → %s', (input, expected) => {
     expect(resolveDeployProfile(input)).toBe(expected)
   })

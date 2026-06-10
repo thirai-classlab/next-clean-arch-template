@@ -1,0 +1,68 @@
+# docker-compose.vps.yml
+# VPS deploy: Next.js app + PostgreSQL 16
+# Usage: docker compose -f docker-compose.vps.yml up -d
+#
+# Prerequisites:
+#   1. Copy .env.vps.example to .env and fill in secrets.
+#   2. Run: pnpm prisma migrate deploy
+#   3. Run: pnpm prisma db seed
+#
+# Environment variables are loaded from .env file by Docker Compose automatically.
+# (No top-level `version:` key — deprecated in the Compose Specification / v2+.)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      # POSTGRES_PASSWORD is REQUIRED and has no default — set it in .env.
+      # setup-vps-postgres.sh pre-flight checks that it is non-empty.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Loopback-only binding: lets the host run `prisma migrate deploy` /
+      # `prisma db seed` against localhost:5432 (the DATABASE_URL in
+      # .env.vps.example) WITHOUT exposing Postgres to the network.
+      - '127.0.0.1:5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-appdb}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-appuser}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-appdb}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      LOGIN_STRATEGY: ${LOGIN_STRATEGY:-both}
+      DEPLOY_PROFILE: vps-next-postgres
+      MOCK_MODE: 'false'
+      RATE_LIMIT_ENABLED: 'true'
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    networks:
+      - app_net
+
+volumes:
+  postgres_data:
+
+networks:
+  app_net:
+    driver: bridge
