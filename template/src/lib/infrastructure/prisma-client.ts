@@ -20,42 +20,36 @@
 // Edge runtime constraint: MUST NOT be imported from middleware / Edge code
 // (Prisma Client uses Node.js native modules).
 
-import type { PrismaClient } from '@prisma/client'
-
-/**
- * Model delegate surface shared by both providers. The postgres-generated
- * delegates additionally expose `createManyAndReturn` / `updateManyAndReturn`
- * (Postgres `RETURNING` — not supported by MySQL/MariaDB), so those are
- * excluded from the cross-profile contract.
- */
-type SharedModelDelegate<D> = Omit<
-  D,
-  'createManyAndReturn' | 'updateManyAndReturn'
->
-
 /**
  * Shared compile-time contract for profile-agnostic Prisma consumers
- * (PrismaUserRepository, NextAuthAdapter, src/auth.ts): the model delegates
- * plus connection lifecycle, typed from the postgres-generated client (the
- * canonical schema surface).
+ * (PrismaUserRepository, NextAuthAdapter, src/auth.ts).
+ *
+ * This type is defined WITHOUT importing from '@prisma/client' so that
+ * profiles that do not generate the postgres schema (vercel/pro, which prunes
+ * the entire prisma/ directory) can still compile this file cleanly. The type
+ * is structural: any generated Prisma client that satisfies this shape can be
+ * used at runtime, including the mariadb-provider client.
  *
  * Provider-specific surfaces ($transaction isolation-level options,
- * RETURNING-based delegate methods, etc.) legitimately differ between the
- * postgresql and mysql generated clients and are deliberately EXCLUDED —
- * code shared across both profiles must not use them.
+ * RETURNING-based delegate methods `createManyAndReturn` /
+ * `updateManyAndReturn`, etc.) legitimately differ between the postgresql and
+ * mysql generated clients and are deliberately EXCLUDED — code shared across
+ * both profiles must not use them.
  *
- * Compile-time drift guarding: full structural assignability between the two
- * generated clients is impossible by design (provider FILTER types differ,
- * e.g. StringFilter.mode / QueryMode is postgres-only and appears in every
- * nested where-input). The model ROW types ARE provider-independent, and
- * their mutual assignability is enforced as a compile error in
- * prisma-mariadb.ts; the full schema text is enforced by
+ * Compile-time drift guarding between the two generated clients (postgres vs
+ * mariadb) is performed in prisma-mariadb.ts via mutual-assignability checks
+ * on the model ROW types; the full schema text is enforced by
  * `pnpm check:schema-drift` (CI gate).
  */
-export type ProfilePrismaClient = Pick<PrismaClient, '$connect' | '$disconnect'> & {
-  user: SharedModelDelegate<PrismaClient['user']>
-  account: SharedModelDelegate<PrismaClient['account']>
-  auditLog: SharedModelDelegate<PrismaClient['auditLog']>
+export type ProfilePrismaClient = {
+  $connect(): Promise<void>
+  $disconnect(): Promise<void>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  user: { findUnique: (...args: any[]) => any; upsert: (...args: any[]) => any; create: (...args: any[]) => any; update: (...args: any[]) => any; delete: (...args: any[]) => any; findMany: (...args: any[]) => any }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  account: { create: (...args: any[]) => any; findFirst: (...args: any[]) => any; delete: (...args: any[]) => any; deleteMany: (...args: any[]) => any }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  auditLog: { create: (...args: any[]) => any; findMany: (...args: any[]) => any; count: (...args: any[]) => any }
 }
 
 /**

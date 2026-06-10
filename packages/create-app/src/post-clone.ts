@@ -253,48 +253,76 @@ export async function patchRootConfigs(
     deployProfile === 'vps-next-postgres' ||
     deployProfile === 'vps-next-mariadb';
 
+  // Determine which source files need to be added to tsconfig.json exclude[].
+  // TypeScript statically resolves dynamic import() paths and import type
+  // statements; any file that imports from a deleted module (or is itself
+  // deleted) must be excluded from the TypeScript compilation to avoid
+  // TS2307 "Cannot find module" errors during `next build`.
+
   // prisma-mariadb.ts is removed for non-mariadb profiles.
-  // TypeScript statically resolves dynamic import() paths; without excluding
-  // the deleted file from tsconfig, `tsc --noEmit` (run inside `next build`)
-  // will fail with TS2307 "Cannot find module './prisma-mariadb'".
   const mariadbRemoved =
     deployProfile === 'pro' ||
     deployProfile === 'vps-next-postgres' ||
     deployProfile === 'vps-nest-postgres';
 
-  if (!apiRemoved && !mariadbRemoved) return;
+  // For vercel/pro, the entire prisma/ directory is pruned. Files that
+  // import from '@prisma/client' (which is not generated without a schema)
+  // must be excluded from TypeScript type-checking.
+  const allPrismaRemoved = deployProfile === 'pro';
+
+  if (!apiRemoved && !mariadbRemoved && !allPrismaRemoved) return;
 
   // Patch tsconfig.json
   const tsconfigPath = join(targetDir, 'tsconfig.json');
   if (await fileExists(tsconfigPath)) {
     const raw = await readFile(tsconfigPath, 'utf8');
-    const tsconfig = JSON.parse(raw) as {
-      include?: string[];
-      exclude?: string[];
-      compilerOptions?: Record<string, unknown>;
-      [key: string]: unknown;
-    };
 
+    // Step 1: regex-based api/ path removal (preserves JSON comment-like structure)
+    let tsconfigStr = raw;
     if (apiRemoved) {
       // Remove path mapping lines containing "api/"
-      let tsconfigStr = raw;
       tsconfigStr = tsconfigStr.replace(/^\s*"[^"]*":\s*\["[^"]*api[^"]*"\][,]?\s*\n/gm, '');
       // Remove project references entries pointing to api/
       tsconfigStr = tsconfigStr.replace(/^\s*\{\s*"path":\s*"[^"]*api[^"]*"\s*\}[,]?\s*\n/gm, '');
       await writeFile(tsconfigPath, tsconfigStr);
     }
 
+    // Step 2: add prisma-related entries to tsconfig.exclude[]
+    const excludeEntries: string[] = [];
+
     if (mariadbRemoved) {
-      // Re-read in case api patch above already wrote it
-      const current = JSON.parse(await readFile(tsconfigPath, 'utf8')) as typeof tsconfig;
+      // prisma-mariadb.ts uses webpackIgnore to skip webpack bundling, but
+      // TypeScript still resolves the import() path at type-check time.
+      excludeEntries.push('src/lib/infrastructure/prisma-mariadb.ts');
+    }
+
+    if (allPrismaRemoved) {
+      // On vercel/pro, all Prisma schema + generated client files are pruned.
+      // Files below import from '@prisma/client' whose PrismaClient type is
+      // only generated when prisma/schema.prisma exists (postgres schema).
+      excludeEntries.push(
+        'src/lib/infrastructure/prisma.ts',
+        'src/lib/infrastructure/prisma-client.ts',
+        'src/lib/infrastructure/repositories/prisma/prisma-user.repository.ts',
+        'src/lib/infrastructure/adapters/real/nextauth-auth.adapter.ts',
+      );
+    }
+
+    if (excludeEntries.length > 0) {
+      // Re-read after potential api patch above
+      const current = JSON.parse(await readFile(tsconfigPath, 'utf8')) as {
+        exclude?: string[];
+        [key: string]: unknown;
+      };
       if (!Array.isArray(current.exclude)) {
         current.exclude = [];
       }
-      const mariadbEntry = 'src/lib/infrastructure/prisma-mariadb.ts';
-      if (!current.exclude.includes(mariadbEntry)) {
-        current.exclude.push(mariadbEntry);
-        await writeFile(tsconfigPath, `${JSON.stringify(current, null, 2)}\n`);
+      for (const entry of excludeEntries) {
+        if (!current.exclude.includes(entry)) {
+          current.exclude.push(entry);
+        }
       }
+      await writeFile(tsconfigPath, `${JSON.stringify(current, null, 2)}\n`);
     }
   }
 
