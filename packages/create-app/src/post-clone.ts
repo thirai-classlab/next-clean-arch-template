@@ -1,14 +1,20 @@
-import { readFile, writeFile, copyFile, rm, access } from 'node:fs/promises';
+import { readFile, writeFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execa as defaultExeca } from 'execa';
-import type { PackageManager, Profile } from './prompt.js';
+import type { PackageManager } from './prompt.js';
+import type { DeployProfile, LoginStrategy } from './config-resolver.js';
 import { classifyError } from './errors.js';
 
 /**
- * draft 10 Step 2.4: clone 完了後の後処理。
- * (a) package.json name 置換 (b) .env.example -> .env.local copy
- * (c) git init + initial commit (d) pm install (e) profile 別 file 削除。
- * execa は injectable (test で network/subprocess なしに検証)。
+ * Post-clone operations:
+ * (a) package.json name rewrite
+ * (b) write .env.local with pattern-specific content
+ * (c) prune pattern-specific files
+ * (d) patch root configs (tsconfig.json / eslint.config.mjs) when api/ removed
+ * (e) git init + initial commit
+ * (f) pm install
+ *
+ * execa is injectable for tests.
  */
 
 type ExecaFn = typeof defaultExeca;
@@ -17,13 +23,13 @@ export interface PostCloneOptions {
   targetDir: string;
   projectName: string;
   pm: PackageManager;
-  profile: Profile;
+  deployProfile: DeployProfile;
+  loginStrategy: LoginStrategy;
+  authDomain: string;
   install: boolean;
   git: boolean;
   execa?: ExecaFn;
 }
-
-const VERCEL_PROFILES: Profile[] = ['vercel-managed', 'vercel-supabase'];
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -39,30 +45,271 @@ async function rewritePackageName(
   projectName: string,
 ): Promise<void> {
   const pkgPath = join(targetDir, 'package.json');
-  const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
+  const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as Record<string, unknown>;
   pkg.name = projectName;
   await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-async function copyEnvExample(targetDir: string): Promise<void> {
-  const src = join(targetDir, '.env.example');
-  if (await fileExists(src)) {
-    await copyFile(src, join(targetDir, '.env.local'));
+/**
+ * Write .env.local with pattern-specific content.
+ * This replaces the old copyEnvExample() call.
+ */
+export async function writeEnvLocal(
+  targetDir: string,
+  deployProfile: DeployProfile,
+  loginStrategy: LoginStrategy,
+  authDomain: string,
+): Promise<void> {
+  const includeGoogle = loginStrategy === 'sso' || loginStrategy === 'both';
+  const domainLine =
+    authDomain !== '' ? `AUTH_ALLOWED_EMAIL_DOMAIN=${authDomain}\n` : '';
+
+  let content: string;
+
+  if (deployProfile === 'pro') {
+    content = [
+      'MOCK_MODE=true',
+      'DEPLOY_PROFILE=pro',
+      `LOGIN_STRATEGY=${loginStrategy}`,
+      domainLine.trimEnd(),
+      '# Production keys (fill in before going live):',
+      '# NEXT_PUBLIC_SUPABASE_URL=',
+      '# NEXT_PUBLIC_SUPABASE_ANON_KEY=',
+      '# SUPABASE_SERVICE_ROLE_KEY=',
+      ...(includeGoogle
+        ? [
+            '# GOOGLE_OAUTH_CLIENT_ID=',
+            '# GOOGLE_OAUTH_CLIENT_SECRET=',
+          ]
+        : []),
+    ]
+      .filter((line) => line !== '')
+      .join('\n') + '\n';
+  } else if (
+    deployProfile === 'vps-next-postgres' ||
+    deployProfile === 'vps-nest-postgres'
+  ) {
+    content = [
+      'MOCK_MODE=true',
+      `DEPLOY_PROFILE=${deployProfile}`,
+      `LOGIN_STRATEGY=${loginStrategy}`,
+      domainLine.trimEnd(),
+      '# Production keys (fill in before deploying):',
+      '# DATABASE_URL=postgresql://appuser:CHANGE_ME@localhost:5432/appdb',
+      '# NEXTAUTH_SECRET=',
+      '# NEXTAUTH_URL=https://app.example.com',
+      ...(includeGoogle
+        ? [
+            '# AUTH_GOOGLE_ID=',
+            '# AUTH_GOOGLE_SECRET=',
+          ]
+        : []),
+    ]
+      .filter((line) => line !== '')
+      .join('\n') + '\n';
+  } else {
+    // vps-next-mariadb or vps-nest-mariadb
+    content = [
+      'MOCK_MODE=true',
+      `DEPLOY_PROFILE=${deployProfile}`,
+      `LOGIN_STRATEGY=${loginStrategy}`,
+      domainLine.trimEnd(),
+      '# Production keys (fill in before deploying):',
+      '# DATABASE_URL=mysql://appuser:CHANGE_ME@localhost:3307/appdb',
+      '# NEXTAUTH_SECRET=',
+      '# NEXTAUTH_URL=https://app.example.com',
+      ...(includeGoogle
+        ? [
+            '# AUTH_GOOGLE_ID=',
+            '# AUTH_GOOGLE_SECRET=',
+          ]
+        : []),
+    ]
+      .filter((line) => line !== '')
+      .join('\n') + '\n';
   }
+
+  await writeFile(join(targetDir, '.env.local'), content);
 }
 
-async function pruneProfileFiles(
+/**
+ * Remove a path (file or directory) — missing paths are silently skipped.
+ */
+async function rmForce(p: string): Promise<void> {
+  await rm(p, { recursive: true, force: true });
+}
+
+/**
+ * Prune files/directories per the 5-pattern matrix.
+ */
+export async function prunePatternFiles(
   targetDir: string,
-  profile: Profile,
+  deployProfile: DeployProfile,
 ): Promise<void> {
-  const toRemove: string[] = VERCEL_PROFILES.includes(profile)
-    ? ['Dockerfile', 'docker-compose.yml']
-    : profile === 'vps'
-      ? ['vercel.json']
-      : [];
-  await Promise.all(
-    toRemove.map((f) => rm(join(targetDir, f), { force: true })),
-  );
+  const r = (rel: string) => join(targetDir, rel);
+
+  const removals: string[] = [];
+
+  if (deployProfile === 'pro') {
+    // vercel: remove NestJS backend, VPS docker files, Prisma, VPS env/scripts
+    removals.push(
+      r('api'),
+      r('docker-compose.vps.yml'),
+      r('docker-compose.mariadb.yml'),
+      r('docker-compose.nest-postgres.yml'),
+      r('docker-compose.nest-mariadb.yml'),
+      r('Dockerfile'),
+      r('prisma'),
+      r('.env.vps.example'),
+      r('.env.mariadb.example'),
+      r('scripts/setup-vps-postgres.sh'),
+      r('scripts/setup-supabase.test.sh'),
+      r('scripts/seed-users.ts'),
+      // prisma-mariadb.ts is only for vps-*-mariadb profiles; remove for non-mariadb
+      r('src/lib/infrastructure/prisma-mariadb.ts'),
+    );
+  } else if (deployProfile === 'vps-next-postgres') {
+    removals.push(
+      r('api'),
+      r('docker-compose.mariadb.yml'),
+      r('docker-compose.nest-postgres.yml'),
+      r('docker-compose.nest-mariadb.yml'),
+      r('prisma/mariadb'),
+      r('supabase'),
+      r('vercel.ts'),
+      r('.env.mariadb.example'),
+      r('scripts/setup-supabase.sh'),
+      r('scripts/setup-supabase.test.sh'),
+      r('scripts/setup-vercel.sh'),
+      r('scripts/setup-vercel.test.sh'),
+      // prisma-mariadb.ts is only for vps-*-mariadb profiles; remove for postgres
+      r('src/lib/infrastructure/prisma-mariadb.ts'),
+    );
+  } else if (deployProfile === 'vps-next-mariadb') {
+    removals.push(
+      r('api'),
+      r('docker-compose.vps.yml'),
+      r('docker-compose.nest-postgres.yml'),
+      r('docker-compose.nest-mariadb.yml'),
+      r('prisma/schema.prisma'),
+      r('prisma/migrations'),
+      r('supabase'),
+      r('vercel.ts'),
+      r('.env.vps.example'),
+      r('scripts/setup-supabase.sh'),
+      r('scripts/setup-supabase.test.sh'),
+      r('scripts/setup-vercel.sh'),
+      r('scripts/setup-vercel.test.sh'),
+    );
+  } else if (deployProfile === 'vps-nest-postgres') {
+    removals.push(
+      r('docker-compose.mariadb.yml'),
+      r('docker-compose.nest-mariadb.yml'),
+      r('docker-compose.vps.yml'),
+      r('prisma/mariadb'),
+      r('supabase'),
+      r('vercel.ts'),
+      r('.env.mariadb.example'),
+      r('scripts/setup-supabase.sh'),
+      r('scripts/setup-supabase.test.sh'),
+      r('scripts/setup-vercel.sh'),
+      r('scripts/setup-vercel.test.sh'),
+      // prisma-mariadb.ts is only for vps-*-mariadb profiles; remove for postgres
+      r('src/lib/infrastructure/prisma-mariadb.ts'),
+    );
+  } else {
+    // vps-nest-mariadb
+    removals.push(
+      r('docker-compose.vps.yml'),
+      r('docker-compose.nest-postgres.yml'),
+      r('docker-compose.mariadb.yml'),
+      r('prisma/schema.prisma'),
+      r('prisma/migrations'),
+      r('supabase'),
+      r('vercel.ts'),
+      r('.env.vps.example'),
+      r('scripts/setup-supabase.sh'),
+      r('scripts/setup-supabase.test.sh'),
+      r('scripts/setup-vercel.sh'),
+      r('scripts/setup-vercel.test.sh'),
+    );
+  }
+
+  await Promise.all(removals.map(rmForce));
+}
+
+/**
+ * After pruning api/ and/or prisma-mariadb.ts, remove their references from
+ * tsconfig.json and eslint.config.mjs using regex-based rewrite (no AST
+ * parser dependency).
+ */
+export async function patchRootConfigs(
+  targetDir: string,
+  deployProfile: DeployProfile,
+): Promise<void> {
+  // api/ is removed for: pro, vps-next-postgres, vps-next-mariadb
+  const apiRemoved =
+    deployProfile === 'pro' ||
+    deployProfile === 'vps-next-postgres' ||
+    deployProfile === 'vps-next-mariadb';
+
+  // prisma-mariadb.ts is removed for non-mariadb profiles.
+  // TypeScript statically resolves dynamic import() paths; without excluding
+  // the deleted file from tsconfig, `tsc --noEmit` (run inside `next build`)
+  // will fail with TS2307 "Cannot find module './prisma-mariadb'".
+  const mariadbRemoved =
+    deployProfile === 'pro' ||
+    deployProfile === 'vps-next-postgres' ||
+    deployProfile === 'vps-nest-postgres';
+
+  if (!apiRemoved && !mariadbRemoved) return;
+
+  // Patch tsconfig.json
+  const tsconfigPath = join(targetDir, 'tsconfig.json');
+  if (await fileExists(tsconfigPath)) {
+    const raw = await readFile(tsconfigPath, 'utf8');
+    const tsconfig = JSON.parse(raw) as {
+      include?: string[];
+      exclude?: string[];
+      compilerOptions?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+
+    if (apiRemoved) {
+      // Remove path mapping lines containing "api/"
+      let tsconfigStr = raw;
+      tsconfigStr = tsconfigStr.replace(/^\s*"[^"]*":\s*\["[^"]*api[^"]*"\][,]?\s*\n/gm, '');
+      // Remove project references entries pointing to api/
+      tsconfigStr = tsconfigStr.replace(/^\s*\{\s*"path":\s*"[^"]*api[^"]*"\s*\}[,]?\s*\n/gm, '');
+      await writeFile(tsconfigPath, tsconfigStr);
+    }
+
+    if (mariadbRemoved) {
+      // Re-read in case api patch above already wrote it
+      const current = JSON.parse(await readFile(tsconfigPath, 'utf8')) as typeof tsconfig;
+      if (!Array.isArray(current.exclude)) {
+        current.exclude = [];
+      }
+      const mariadbEntry = 'src/lib/infrastructure/prisma-mariadb.ts';
+      if (!current.exclude.includes(mariadbEntry)) {
+        current.exclude.push(mariadbEntry);
+        await writeFile(tsconfigPath, `${JSON.stringify(current, null, 2)}\n`);
+      }
+    }
+  }
+
+  if (!apiRemoved) return;
+
+  // Patch eslint.config.mjs: remove import/require lines referencing api/ config
+  const eslintPath = join(targetDir, 'eslint.config.mjs');
+  if (await fileExists(eslintPath)) {
+    let eslint = await readFile(eslintPath, 'utf8');
+    // Remove import lines that reference api/
+    eslint = eslint.replace(/^[^\n]*['"]\.\/api[^\n]*\n/gm, '');
+    // Remove spread/object entries that reference api config variable
+    eslint = eslint.replace(/^\s*\.\.\.api[A-Za-z]*Config[^\n]*\n/gm, '');
+    await writeFile(eslintPath, eslint);
+  }
 }
 
 async function initGit(targetDir: string, execa: ExecaFn): Promise<void> {
@@ -88,8 +335,9 @@ export async function postClone(opts: PostCloneOptions): Promise<void> {
   const execa = opts.execa ?? defaultExeca;
   try {
     await rewritePackageName(opts.targetDir, opts.projectName);
-    await copyEnvExample(opts.targetDir);
-    await pruneProfileFiles(opts.targetDir, opts.profile);
+    await prunePatternFiles(opts.targetDir, opts.deployProfile);
+    await patchRootConfigs(opts.targetDir, opts.deployProfile);
+    await writeEnvLocal(opts.targetDir, opts.deployProfile, opts.loginStrategy, opts.authDomain);
 
     if (opts.git) {
       await initGit(opts.targetDir, execa);

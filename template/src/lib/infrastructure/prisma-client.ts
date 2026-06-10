@@ -68,8 +68,15 @@ export async function getProfilePrismaClient(
   profile?: string,
 ): Promise<ProfilePrismaClient> {
   const active = profile ?? process.env.DEPLOY_PROFILE
-  if (active === 'vps-next-mariadb') {
-    const { prismaMariadb } = await import('./prisma-mariadb')
+  if (active === 'vps-next-mariadb' || active === 'vps-nest-mariadb') {
+    // webpackIgnore: true tells webpack NOT to statically trace and bundle this
+    // module path. For non-mariadb profiles the CLI post-clone step prunes
+    // prisma-mariadb.ts, so webpack must not attempt to resolve it at build time
+    // (MODULE_NOT_FOUND). The import is safe at runtime because this branch is
+    // only reached when DEPLOY_PROFILE is a mariadb variant, i.e. the file
+    // is always present when this code actually executes.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const mod = await import(/* webpackIgnore: true */ './prisma-mariadb')
     // SAFETY: the mariadb-generated client cannot be ASSIGNED to the
     // postgres-typed contract because provider-specific filter surfaces
     // differ by design (StringFilter.mode / QueryMode is postgres-only and
@@ -79,7 +86,8 @@ export async function getProfilePrismaClient(
     // add/remove/rename/type change — and (2) `pnpm check:schema-drift`
     // (CI gate over the full schema text). Shared code must stay within the
     // ProfilePrismaClient surface (provider-only members are excluded above).
-    return prismaMariadb as unknown as ProfilePrismaClient
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    return (mod as { prismaMariadb: unknown }).prismaMariadb as unknown as ProfilePrismaClient
   }
   const { prisma } = await import('./prisma')
   return prisma
