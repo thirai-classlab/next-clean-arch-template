@@ -91,6 +91,17 @@ export async function getProfilePrismaClient(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     return (mod as { prismaMariadb: unknown }).prismaMariadb as unknown as ProfilePrismaClient
   }
-  const { prisma } = await import('./prisma')
-  return prisma
+  // The path is cast `as string` to prevent TypeScript from statically resolving
+  // prisma.ts and type-checking its `import { PrismaClient } from '@prisma/client'`
+  // statement on profiles where the entire prisma/ directory was pruned by the CLI
+  // post-clone step (vercel/pro). The `as string` cast makes the specifier opaque to
+  // the TypeScript checker (import(string) → any), identical to the mariadb branch
+  // above. Webpack statically traces the literal './prisma' path into the bundle on
+  // profiles where prisma.ts exists (vps-next-postgres, vps-nest-postgres) — that is
+  // safe because prisma/ is present on those profiles. On vercel/pro, the CLI prunes
+  // prisma.ts so this branch is never reached at runtime (DEPLOY_PROFILE !== 'pro'
+  // would be a container.ts misconfiguration, not a normal code path).
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { prisma } = await import('./prisma' as string)
+  return prisma as unknown as ProfilePrismaClient
 }
