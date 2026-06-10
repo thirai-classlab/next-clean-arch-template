@@ -1,0 +1,17 @@
+/** @type {import('jest').Config} */
+module.exports = {
+  moduleFileExtensions: ['js', 'json', 'ts'],
+  rootDir: '.',
+  testRegex: '.e2e-spec.ts$',
+  transform: {
+    '^.+\\.(t|j)s$': ['ts-jest', {
+      tsconfig: './tsconfig.json',
+    }],
+  },
+  testEnvironment: 'node',
+  moduleNameMapper: {
+    '^@shared/(.*)$': '<rootDir>/../src/lib/$1',  // rootDir is api/, so ../src goes to template/src
+  },
+  // Increase timeout for Nest bootstrap
+  testTimeout: 30000,
+}

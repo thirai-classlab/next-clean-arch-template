@@ -258,8 +258,10 @@ pnpm build
 
 | Feature | Details |
 |---|---|
-| 4 Profiles (DEPLOY_PROFILE) | minimal / unlocked / pro / vps で adapter mapping 変更 |
-| Vercel + Supabase (default) | Vercel deploy + zod 共有 |
+| 5 デプロイパターン | Vercel+Supabase / VPS (Next+Postgres / Next+MariaDB / Nest+Postgres / Nest+MariaDB) — 詳細は [Deployment Patterns](#deploy_profile-environment-profiles) |
+| 認証の選択 (env 駆動) | `LOGIN_STRATEGY` (Google SSO / email+password / both) + `AUTH_ALLOWED_EMAIL_DOMAIN` (ドメイン制限 hook) を全パターンで切替可 |
+| Vercel + Supabase (default) | Vercel deploy + Supabase Auth/Postgres/RLS |
+| VPS 構成 | docker-compose 同梱 (NextAuth v5 + Prisma、または NestJS 所有 auth + Passport JWT) |
 | Automated setup-supabase.sh | 環境セットアップ自動化 |
 | Automated setup-vercel.sh | Vercel CLI integration |
 | env validation prebuild hook | build 前 config 検証 |
@@ -345,20 +347,71 @@ my-app/
 
 ### DEPLOY_PROFILE Environment Profiles
 
-The scaffolded project uses the `DEPLOY_PROFILE` environment variable to control which adapters are loaded at runtime:
+`DEPLOY_PROFILE` 環境変数で実行時に load される adapter 一式が切り替わります。デプロイ先に応じて以下の **5 デプロイパターン** から選択してください。
 
-| Profile | Auth | DB | File Storage | Cache | Rate Limit | Use Case |
-|---|---|---|---|---|---|---|
-| **minimal** | mock | in-memory | in-memory | — | mock | ローカル開発 |
-| **unlocked** | Supabase SSR | Supabase | Supabase Storage | — | mock | Vercel draft |
-| **pro** | Supabase SSR | Supabase | Supabase Storage | Redis | real | Vercel production |
-| **vps** | NextAuth | Postgres | MinIO | Redis | real | VPS self-host |
+#### Deployment Patterns (デプロイ先 × 構成の選択表)
+
+| パターン (DEPLOY_PROFILE) | デプロイ先 | FE | BE | DB | 認証の所有 |
+|---|---|---|---|---|---|
+| **pro** (Vercel + Supabase) | Vercel | Next.js | Next.js (Server Actions) | Supabase Postgres + RLS | Supabase Auth (Google OAuth + email/pw + domain hook SQL) |
+| **vps-next-postgres** | VPS | Next.js | Next.js (Server Actions) | PostgreSQL 16 | NextAuth v5 (JWT session、role claim) |
+| **vps-next-mariadb** | VPS | Next.js | Next.js (Server Actions) | MariaDB 11 | NextAuth v5 (同上、Prisma mysql provider) |
+| **vps-nest-postgres** | VPS | Next.js | **NestJS** (`api/`) | PostgreSQL 16 | **NestJS 所有** (Passport credentials + Google OAuth + JWT cookie + RolesGuard) |
+| **vps-nest-mariadb** | VPS | Next.js | **NestJS** (`api/`) | MariaDB 11 | **NestJS 所有** (同上) |
+
+> 補助 profile: **minimal** (全 mock、ローカル開発 default) / **unlocked** (Supabase + mock rate-limit、Vercel draft)。
+> ローカル開発はどのパターンでも `MOCK_MODE=true` (default) で **DB / Supabase / Nest 一切不要**で起動できます。
+
+#### どちらを選ぶべきか (next-only vs next+nest)
+
+| 判断軸 | next-only (vps-next-\*) | next+nest (vps-nest-\*) |
+|---|---|---|
+| CRUD / form / admin 中心の SaaS | ✅ 十分 (Server Actions で完結) | over-engineering |
+| WebSocket / リアルタイム配信 | ❌ 不向き | ✅ Nest gateway が常駐 |
+| 長時間 job / queue / cron worker | ❌ (serverless 制約) | ✅ always-on プロセス |
+| モバイル等の複数クライアントから同一 API | △ | ✅ API を Nest に集約 |
+| 運用プロセス数 / 学習コスト | 最小 (1 プロセス) | +1 プロセス (Nest) |
+
+Vercel にデプロイする場合は **Vercel + Supabase パターン一択** (VPS 系 profile は常駐プロセス前提)。VPS で Supabase を self-host する構成は採用していません — Supabase を使う場合は本番も Supabase Cloud (managed) を利用します。
+
+#### 認証の構成 (全パターン共通、env 駆動)
+
+| env | 値 | 効果 |
+|---|---|---|
+| `LOGIN_STRATEGY` | `sso` / `email-pass` / `both` | Google SSO ボタン / email+password フォーム / 両方 の表示・エンドポイント有効化 |
+| `AUTH_ALLOWED_EMAIL_DOMAIN` | 例 `example.com` (空 = 制限なし) | サインイン可能なメールドメインを制限 (domain hook、大文字小文字・`@` 前置を正規化して比較) |
+
+ロールは全パターン共通の 3 値 (`admin` / `member` / …)。admin ロールのみ `/admin/**` に到達でき、JWT / session claim → Edge middleware → 画面 guard の経路で強制されます。
+
+#### VPS デプロイ quickstart
+
+```bash
+# 1) profile に対応する compose ファイルを使用
+docker compose -f docker-compose.vps.yml up -d            # vps-next-postgres
+docker compose -f docker-compose.mariadb.yml up -d        # vps-next-mariadb
+docker compose -f docker-compose.nest-postgres.yml up -d  # vps-nest-postgres (db + api + web)
+docker compose -f docker-compose.nest-mariadb.yml up -d   # vps-nest-mariadb (db + api + web)
+
+# 2) migration + seed (postgres 系)
+pnpm db:migrate && pnpm db:seed
+#    migration + seed (mariadb 系: 専用 schema prisma/mariadb/schema.prisma を使用)
+pnpm db:migrate:mariadb && pnpm db:seed:mariadb
+
+# 3) 必須 env (.env.example の該当 profile section 参照)
+#    vps-next-*: DATABASE_URL / NEXTAUTH_SECRET / NEXTAUTH_URL
+#    vps-nest-*: DATABASE_URL / JWT_SECRET (Nest と Next で同一値) / NEST_API_URL
+#    共通      : LOGIN_STRATEGY / AUTH_ALLOWED_EMAIL_DOMAIN (任意)
+```
+
+> Postgres / MariaDB の 2 schema は `pnpm check:schema-drift` で drift を機械検出します。nest 系は `api/` ディレクトリが独立 package (NestJS 10) で、`api/.env` に Nest 側 env を設定します。
 
 The CLI scaffolding command `--profile` flag corresponds to these runtime profiles as follows:
 - `--profile vercel-managed` → `DEPLOY_PROFILE=minimal`
 - `--profile vercel-supabase` → `DEPLOY_PROFILE=pro`
-- `--profile vps` → `DEPLOY_PROFILE=vps`
+- `--profile vps` → `DEPLOY_PROFILE=vps` (legacy)
 - `--profile air-gap` → `DEPLOY_PROFILE=minimal` (offline only)
+
+> **Note**: CLI の backend (next-only / next-nest)・DB (postgres / mariadb)・認証 (Google / email+pw / domain) のインストール時選択 prompt は次期 CLI release で追加予定です。それまでは scaffold 後に `DEPLOY_PROFILE` と認証 env を `.env.local` で直接指定してください。
 
 ### Boundary Enforcement
 

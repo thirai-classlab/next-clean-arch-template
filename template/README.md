@@ -60,7 +60,22 @@ exhaustive in-memory mock profile.
 | `minimal` | in-memory | mock / Supabase | local dev, demos, CI |
 | `unlocked` | Supabase | Supabase | small Vercel + Supabase deploys |
 | `pro` | Supabase + Upstash | Supabase | multi-instance Vercel (managed) |
-| `vps` | Postgres + Redis (self-host) | Supabase / self-host | on-prem / air-gap |
+| `vps` | Postgres + Redis (self-host) | Supabase / self-host | on-prem / air-gap (legacy) |
+| `vps-next-postgres` | PostgreSQL 16 (Prisma) | NextAuth v5 (JWT, role claim) | VPS, Next.js only |
+| `vps-next-mariadb` | MariaDB 11 (Prisma mysql) | NextAuth v5 (same) | VPS, Next.js only |
+| `vps-nest-postgres` | PostgreSQL 16 (Prisma) | **NestJS-owned** (`api/`, Passport + JWT cookie + RolesGuard) | VPS, Next.js + NestJS |
+| `vps-nest-mariadb` | MariaDB 11 (Prisma mysql) | **NestJS-owned** (same) | VPS, Next.js + NestJS |
+
+Auth behaviour is env-driven on every profile: `LOGIN_STRATEGY`
+(`sso` / `email-pass` / `both`) selects Google SSO and/or email+password,
+and `AUTH_ALLOWED_EMAIL_DOMAIN` (optional) restricts sign-in to one email
+domain. Roles (`admin` / `member`) are enforced in Edge middleware on all
+profiles. See `.env.example` for the per-profile required keys, and
+`docker-compose.{vps,mariadb,nest-postgres,nest-mariadb}.yml` for VPS
+deployment. The `api/` directory (NestJS 10) is only used by `vps-nest-*`
+profiles. Choose `vps-next-*` for CRUD/admin SaaS (one process);
+choose `vps-nest-*` when you need WebSocket, long-running jobs/queues, or
+an API shared by multiple clients.
 
 Switching profiles never touches application or domain code — only the
 infrastructure adapter wiring changes. This is the core value of the port /

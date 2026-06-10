@@ -36,6 +36,15 @@
 //  expiry (HIGH fix; mirrors middleware.ts / sign-in/page.tsx).
 //  The mock_session cookie clearing still runs (no-op if not set, safe).
 //  Supabase signOut is skipped when Supabase env vars are absent.
+//
+// vps-nest-postgres / vps-nest-mariadb (HIGH fix): all logout UI (LoginGuide,
+//  UserMenu, pending-approval) POSTs to THIS route, but the Nest profiles'
+//  session lives in the 'nest-session-token' httpOnly cookie issued by the
+//  Nest API. Without clearing it here, logout leaves the JWT session live for
+//  up to 1h. Mirroring the NEXTAUTH_PROFILES pattern: best-effort POST to
+//  NEST_API_URL/auth/logout (server-side teardown), then expire the
+//  nest-session-token cookie with the same attributes it was issued with
+//  (path=/, httpOnly, sameSite=lax).
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
@@ -45,12 +54,34 @@ import { getValidatedEnv } from '@/lib/env'
 // MOCK_MODE session SSoT cookie 名 (sign-in.action.ts MOCK_SESSION_COOKIE と一致)。
 const MOCK_SESSION_COOKIE = 'mock_session'
 
+// Nest profile session cookie 名 (api/src/auth/auth.controller.ts COOKIE_NAME と一致)。
+const NEST_SESSION_COOKIE = 'nest-session-token'
+
 // Deploy profiles that use the NextAuth v5 JWT session stack — their session
 // cookie must be torn down via NextAuth signOut() on logout.
 const NEXTAUTH_PROFILES: ReadonlyArray<string> = [
   'vps-next-postgres',
   'vps-next-mariadb',
 ]
+
+// Deploy profiles whose session is the Nest-issued HS256 JWT cookie — the
+// nest-session-token cookie must be expired on logout (HIGH fix).
+const NEST_PROFILES: ReadonlyArray<string> = [
+  'vps-nest-postgres',
+  'vps-nest-mariadb',
+]
+
+/**
+ * Resolve DEPLOY_PROFILE via the env schema SSoT, falling back to raw
+ * process.env when validation fails (sign-out must stay graceful).
+ */
+function resolveDeployProfile(): string {
+  try {
+    return getValidatedEnv().DEPLOY_PROFILE
+  } catch {
+    return process.env.DEPLOY_PROFILE ?? ''
+  }
+}
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── vps-next-postgres / vps-next-mariadb: NextAuth session teardown ──────
@@ -62,16 +93,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // sign-in/page.tsx) rather than raw process.env. getValidatedEnv() throws on
   // invalid env, but sign-out must stay graceful (the mock_session cleanup
   // below has to run no matter what), so fall back to the raw env on failure.
-  let isNextAuthProfile: boolean
-  try {
-    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
-      getValidatedEnv().DEPLOY_PROFILE,
-    )
-  } catch {
-    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
-      process.env.DEPLOY_PROFILE ?? '',
-    )
-  }
+  const deployProfile = resolveDeployProfile()
+  const isNextAuthProfile = NEXTAUTH_PROFILES.includes(deployProfile)
+  const isNestProfile = NEST_PROFILES.includes(deployProfile)
   if (isNextAuthProfile) {
     try {
       const { signOut } = await import('@/auth')
@@ -80,6 +104,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // NextAuth signOut failure — continue to cookie cleanup + redirect.
       // This can happen if NEXTAUTH_SECRET is missing (misconfiguration) or
       // the cookie is already invalid/expired.
+    }
+  }
+
+  // ── vps-nest-postgres / vps-nest-mariadb: Nest session teardown (HIGH fix) ─
+  // Best-effort server-side logout (Nest clears its own cookie scope), then the
+  // nest-session-token cookie is expired below regardless of this call's outcome.
+  if (isNestProfile) {
+    const nestApiUrl = process.env.NEST_API_URL
+    if (nestApiUrl) {
+      try {
+        await fetch(`${nestApiUrl}/auth/logout`, {
+          method: 'POST',
+          headers: {
+            Cookie: `${NEST_SESSION_COOKIE}=${request.cookies.get(NEST_SESSION_COOKIE)?.value ?? ''}`,
+          },
+          credentials: 'omit',
+        })
+      } catch {
+        // Nest unreachable — cookie expiry below still revokes the session
+        // on the browser side.
+      }
     }
   }
 
@@ -112,6 +157,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     sameSite: 'strict',
     secure: process.env.NODE_ENV === 'production',
   })
+
+  // ①' vps-nest-* profiles: expire the Nest-issued JWT session cookie (HIGH fix).
+  // Attributes mirror issuance (auth.controller.ts: path=/, httpOnly,
+  // sameSite=lax) so the browser overwrites the same cookie.
+  if (isNestProfile) {
+    cookieStore.set(NEST_SESSION_COOKIE, '', {
+      maxAge: 0,
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+    })
+  }
 
   const { origin } = new URL(request.url)
   const response = NextResponse.redirect(`${origin}/auth/sign-in`, {
