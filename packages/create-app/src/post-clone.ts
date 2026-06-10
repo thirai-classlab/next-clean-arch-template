@@ -282,6 +282,41 @@ export async function prunePatternFiles(
     deployProfile === 'vps-next-mariadb' || deployProfile === 'vps-nest-mariadb';
   const hasPrisma = deployProfile !== 'pro';
 
+  // Root 2b fix: strip the postgres drift-guard section from prisma-mariadb.ts
+  // on mariadb-only profiles (vps-next-mariadb, vps-nest-mariadb).
+  //
+  // prisma-mariadb.ts ships with compile-time drift guards that import
+  //   import type { User as PostgresUser, ... } from '@prisma/client'
+  // These guards are useful in the template repo (where both schemas coexist),
+  // but on mariadb-only scaffolds the postgres schema is pruned and @prisma/client
+  // (the postgresql-provider generated client) is never generated.
+  //
+  // TypeScript follows `await import('./prisma-mariadb')` from prisma-client.ts
+  // even if prisma-mariadb.ts is in tsconfig.json "exclude" — the exclude only
+  // prevents direct top-level type-checking, not transitive resolution through
+  // imports. Stripping the postgres type imports + drift guard constants removes
+  // the TS2307 "Module '@prisma/client' has no exported member" error.
+  if (isMariadbProfile) {
+    const prismaMariadbPath = r('src/lib/infrastructure/prisma-mariadb.ts');
+    if (await fileExists(prismaMariadbPath)) {
+      let src = await readFile(prismaMariadbPath, 'utf8');
+
+      // Remove the block: import type { User as PostgresUser, ... } from '@prisma/client'
+      src = src.replace(
+        /^import type \{[^}]*\} from '@prisma\/client'\n/m,
+        '',
+      );
+
+      // Remove the drift guard section including the comment header, type alias, consts, and void calls
+      src = src.replace(
+        /\/\/ ── Compile-time schema drift guards ─[^\n]*\n[\s\S]*?void _auditLogRowDriftGuard\s*\n?/,
+        '',
+      );
+
+      await writeFile(prismaMariadbPath, src);
+    }
+  }
+
   if (hasPrisma) {
     if (isMariadbProfile) {
       // mariadb-only profile: use the mariadb variant
@@ -362,14 +397,15 @@ export async function patchRootConfigs(
 
     // For mariadb-only profiles (vps-next-mariadb, vps-nest-mariadb), the
     // postgres @prisma/client is NOT generated because prisma/schema.prisma is
-    // pruned. prisma-mariadb.ts contains compile-time drift guards that import
-    // type { User, Account, AuditLog } from '@prisma/client' — these fail with
-    // TS2307 if the postgres client was never generated.
-    // We exclude prisma-mariadb.ts from tsc type-checking for these profiles.
-    // The file still exists and runs correctly at runtime (only mariadb client
-    // is needed, and that is generated from prisma/mariadb/schema.prisma).
+    // pruned. Two files import from '@prisma/client' and fail tsc with TS2307:
+    //   - prisma-mariadb.ts (drift guards — stripped by Root 2b fix above, but
+    //     tsconfig exclude provides defense-in-depth)
+    //   - prisma.ts (postgres-only singleton — not used by mariadb-only code
+    //     paths, but remains as an orphan file; excluding from tsc prevents
+    //     TS2307 "PrismaClient has no exported member" false-positive errors)
     if (mariadbOnly) {
       excludeEntries.push('src/lib/infrastructure/prisma-mariadb.ts');
+      excludeEntries.push('src/lib/infrastructure/prisma.ts');
     }
 
     if (allPrismaRemoved) {
