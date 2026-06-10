@@ -5,6 +5,7 @@
  * 環境: node (jsdom 不要)
  */
 import { execSync } from 'node:child_process'
+import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
   supabaseEnvSchema,
@@ -905,7 +906,7 @@ describe('env-validate.ts (integration)', () => {
 
     try {
       const output = execSync('pnpm tsx scripts/env-validate.ts', {
-        cwd: '/Users/t.hirai/recall_poc/apps/web',
+        cwd: path.resolve(import.meta.dirname, '../..'),
         env: { ...process.env, ...cleanEnv },
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
