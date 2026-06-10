@@ -1,32 +1,71 @@
+# Dependabot v2 — weekly grouped, no major bumps (security-only for majors via GitHub Security alerts).
+# Rationale: 2026-06-09 burst of 13 daily PRs (mostly major bumps) caused CI/queue noise.
+# Replace with weekly grouped minor/patch updates; humans review major separately.
 version: 2
 updates:
-  # npm dependencies for CLI package (monorepo nested) - weekly
-  - package-ecosystem: npm
-    directory: "/packages/create-app"
-    schedule:
-      interval: weekly
-      day: monday
-      time: "03:00"
-    open-pull-requests-limit: 5
-    # Note: daily patch-only entry removed (P-8) to avoid PR flood (~50+ PRs/month).
-    # Repo-level Dependabot security updates cover CVE-triggered patches automatically.
-
-  # npm dependencies for template skeleton (monorepo nested) - weekly
-  # NOTE: template/ は giget 経由で fetch される Next.js skeleton。
-  # template 自体は publish しないが、dep の脆弱性 / 古さは consuming user に伝播するため watch する。
-  - package-ecosystem: npm
+  # template/ Next.js skeleton
+  - package-ecosystem: "npm"
     directory: "/template"
     schedule:
-      interval: weekly
-      day: monday
-      time: "03:00"
+      interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "template"
+    groups:
+      template-dev:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      template-prod:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
-  # GitHub Actions - weekly (.github/workflows/ at root)
-  - package-ecosystem: github-actions
+  # packages/create-app CLI
+  - package-ecosystem: "npm"
+    directory: "/packages/create-app"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "cli"
+    groups:
+      cli-dev:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      cli-prod:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # GitHub Actions workflows (root)
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "03:00"
-    open-pull-requests-limit: 5
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      gha:
+        patterns:
+          - "*"
