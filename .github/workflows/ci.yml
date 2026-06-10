@@ -27,7 +27,9 @@ jobs:
       - run: pnpm --filter @takuma-hirai/create-app build
 
       - name: Verify changeset file presence (H-02)
-        if: github.event_name == 'pull_request'
+        # dependabot は changeset を作成できないため gate を skip する
+        # (依存更新は weekly + grouped 設定済、release note は grouped PR title で担保)
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         run: |
           # NOTE: changesets は monorepo root の `.changeset/*.md` で管理。
           # PR diff に `.changeset/<slug>.md` が含まれていれば OK。
