@@ -226,6 +226,9 @@ export async function prunePatternFiles(
       r('scripts/setup-supabase.test.sh'),
       r('scripts/setup-vercel.sh'),
       r('scripts/setup-vercel.test.sh'),
+      // prisma.ts is the postgres-only singleton; remove on mariadb-only profiles
+      // (no postgres @prisma/client generated → PrismaClient import would fail).
+      r('src/lib/infrastructure/prisma.ts'),
     );
   } else if (deployProfile === 'vps-nest-postgres') {
     removals.push(
@@ -258,6 +261,9 @@ export async function prunePatternFiles(
       r('scripts/setup-supabase.test.sh'),
       r('scripts/setup-vercel.sh'),
       r('scripts/setup-vercel.test.sh'),
+      // prisma.ts is the postgres-only singleton; remove on mariadb-only profiles
+      // (no postgres @prisma/client generated → PrismaClient import would fail).
+      r('src/lib/infrastructure/prisma.ts'),
     );
   }
 
