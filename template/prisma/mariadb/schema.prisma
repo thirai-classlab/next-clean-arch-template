@@ -1,0 +1,105 @@
+// prisma/mariadb/schema.prisma
+// vps-next-mariadb profile — NextAuth v5 (Auth.js) + Prisma 7 + MariaDB 11
+// JWT session strategy: Session and VerificationToken models are OMITTED.
+// Only Account is needed for OAuth provider linking (Google → same Prisma User).
+//
+// Timezone note: MariaDB DATETIME(3) does NOT store timezone information.
+// All DateTime values MUST be stored/read as UTC in application code.
+// Node.js Date objects default to UTC and Prisma serializes DateTime as UTC,
+// so this is safe in practice — but avoid storing user-local times directly.
+//
+// UUID generation: @default(uuid()) is NOT used here (mysql provider does not
+// expose uuid() as a stable feature across MariaDB 10.x/11.x). UUIDs are
+// generated in the application layer via crypto.randomUUID() — in
+// PrismaUserRepository.save() (id is set by caller) and in seed-users.ts.
+// @auth/prisma-adapter also generates ids in JavaScript before calling Prisma,
+// so NextAuth OAuth flows are safe.
+//
+// Custom client output path: prisma/mariadb/.prisma/client/
+// This prevents collision with the default node_modules/@prisma/client that
+// the postgres schema generates. src/lib/infrastructure/prisma-mariadb.ts
+// imports from this custom path.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./.prisma/client"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Role enum — Prisma mysql provider supports native MySQL ENUM.
+// Values mirror domain/value-objects/role.ts ROLES const.
+enum Role {
+  admin
+  member
+  viewer
+}
+
+// UserStatus enum — Prisma mysql provider supports native MySQL ENUM.
+// 'pending' is NOT a Role — it is UserStatus.
+enum UserStatus {
+  pending
+  approved
+  rejected
+  suspended
+}
+
+// User — application user with role, optional passwordHash (null for Google-only),
+// optional name/image from OAuth profile.
+model User {
+  id           String     @id
+  email        String     @unique
+  passwordHash String?
+  role         Role       @default(member)
+  status       UserStatus @default(pending)
+  name         String?
+  image        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  accounts    Account[]
+  auditLogsBy AuditLog[] @relation("performedBy")
+
+  @@map("users")
+}
+
+// Account — NextAuth OAuth provider linking.
+model Account {
+  id                String  @id
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// AuditLog — admin actions (role changes, user approval/rejection).
+// Json maps to MySQL JSON column type (MariaDB 10.2.7+ JSON alias for LONGTEXT
+// with JSON validation). Functionally equivalent to PostgreSQL Json for
+// audit metadata (write-once, infrequent reads, no JSON path indexing needed).
+model AuditLog {
+  id          String   @id
+  action      String
+  targetId    String
+  performedBy String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  performer User @relation("performedBy", fields: [performedBy], references: [id], onDelete: Restrict)
+
+  @@map("audit_logs")
+}

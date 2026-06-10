@@ -1,5 +1,6 @@
 // src/lib/infrastructure/adapters/real/nextauth-auth.adapter.ts
-// NextAuthAdapter — AuthPort implementation for vps-next-postgres profile.
+// NextAuthAdapter — AuthPort implementation for the vps-next-postgres and
+// vps-next-mariadb profiles.
 //
 // Bridges the AuthPort contract to NextAuth v5 (Auth.js beta) + Prisma.
 //
@@ -17,7 +18,15 @@
 //     for API route Bearer token verification.
 //
 // Registered as 'NextAuthAdapter' in ADAPTER_MODULE_MAP (container.ts).
-// Wired as AuthPort for DEPLOY_PROFILE=vps-next-postgres in mapping.ts.
+// Wired as AuthPort for DEPLOY_PROFILE=vps-next-postgres|vps-next-mariadb
+// in mapping.ts.
+//
+// ## Prisma client resolution (CRITICAL fix)
+// This adapter must NOT statically import the postgres prisma singleton:
+// under DEPLOY_PROFILE=vps-next-mariadb that client (postgresql provider)
+// would receive a mysql:// DATABASE_URL and fail at connect time. Instead,
+// signInWithPassword resolves the profile-correct client per call via
+// getProfilePrismaClient() — the same runtime dispatch src/auth.ts uses.
 
 import 'reflect-metadata'
 import { injectable } from 'tsyringe'
@@ -29,7 +38,7 @@ import {
   ExternalServiceError,
 } from '../../../domain/errors'
 import { toRole, type Role } from '../../../domain/value-objects/role'
-import { prisma } from '../../prisma'
+import { getProfilePrismaClient } from '../../prisma-client'
 
 const SERVICE = 'nextauth-auth'
 
@@ -52,6 +61,7 @@ export class NextAuthAdapter implements AuthPort {
     Result<{ userId: string; role: Role }, AuthorizationError | ExternalServiceError>
   > {
     try {
+      const prisma = await getProfilePrismaClient()
       const user = await prisma.user.findUnique({ where: { email } })
       if (!user?.passwordHash) {
         return err(new AuthorizationError('invalid credentials'))

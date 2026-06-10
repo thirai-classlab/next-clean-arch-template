@@ -37,15 +37,29 @@ vi.mock('next/headers', () => ({
   cookies: mockCookies,
 }))
 
+// NextAuth signOut mock — the route lazily `await import('@/auth')`s only when
+// DEPLOY_PROFILE is a NextAuth profile, so this mock is inert for other tests.
+// (Importing the real @/auth in jsdom would pull next-auth + Prisma.)
+const { mockNextAuthSignOut } = vi.hoisted(() => ({
+  mockNextAuthSignOut: vi.fn(),
+}))
+
+vi.mock('@/auth', () => ({
+  signOut: mockNextAuthSignOut,
+}))
+
 describe('POST /auth/sign-out (Route Handler)', () => {
   const prevUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const prevKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const prevProfile = process.env.DEPLOY_PROFILE
 
   beforeEach(() => {
     mockSignOut.mockReset()
     mockCreateClient.mockReset()
     mockCookieSet.mockReset()
     mockCookies.mockReset()
+    mockNextAuthSignOut.mockReset()
+    mockNextAuthSignOut.mockResolvedValue(undefined)
 
     mockCreateClient.mockResolvedValue({
       auth: { signOut: mockSignOut },
@@ -63,6 +77,11 @@ describe('POST /auth/sign-out (Route Handler)', () => {
     vi.restoreAllMocks()
     process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = prevKey
+    if (prevProfile === undefined) {
+      delete process.env.DEPLOY_PROFILE
+    } else {
+      process.env.DEPLOY_PROFILE = prevProfile
+    }
   })
 
   it('(a) calls supabase.auth.signOut()', async () => {
@@ -189,6 +208,62 @@ describe('POST /auth/sign-out (Route Handler)', () => {
 
   it('(MEDIUM-1) env present but async signOut rejects: caught, still 303 + clears mock_session', async () => {
     mockSignOut.mockRejectedValueOnce(new Error('network down'))
+    const { POST } = await import('./route')
+    const req = new Request('http://localhost:3000/auth/sign-out', {
+      method: 'POST',
+    }) as unknown as import('next/server').NextRequest
+
+    const res = await POST(req)
+    expect(res.status).toBe(303)
+    const call = mockCookieSet.mock.calls.find((c) => c[0] === 'mock_session')
+    expect(call).toBeDefined()
+    expect(call?.[2]?.maxAge).toBe(0)
+  })
+
+  // ── NextAuth profiles (vps-next-postgres / vps-next-mariadb) ─────────────
+  // HIGH regression: both profiles share the identical NextAuth v5 JWT session
+  // stack. The route previously only fired NextAuth signOut() for
+  // vps-next-postgres, leaving the vps-next-mariadb JWT session cookie live
+  // after logout until natural expiry.
+  it.each(['vps-next-postgres', 'vps-next-mariadb'])(
+    '(NextAuth) DEPLOY_PROFILE=%s: calls NextAuth signOut to tear down the JWT session cookie',
+    async (deployProfile) => {
+      process.env.DEPLOY_PROFILE = deployProfile
+      const { POST } = await import('./route')
+      const req = new Request('http://localhost:3000/auth/sign-out', {
+        method: 'POST',
+      }) as unknown as import('next/server').NextRequest
+
+      const res = await POST(req)
+      expect(
+        mockNextAuthSignOut,
+        `NextAuth signOut() must fire for ${deployProfile}`,
+      ).toHaveBeenCalledTimes(1)
+      expect(mockNextAuthSignOut).toHaveBeenCalledWith({ redirect: false })
+
+      // Existing teardown contract still holds.
+      expect(res.status).toBe(303)
+      const call = mockCookieSet.mock.calls.find((c) => c[0] === 'mock_session')
+      expect(call).toBeDefined()
+      expect(call?.[2]?.maxAge).toBe(0)
+      expect(res.headers.get('cache-control') ?? '').toContain('no-store')
+    },
+  )
+
+  it('(NextAuth) non-NextAuth profile (minimal): does NOT call NextAuth signOut', async () => {
+    process.env.DEPLOY_PROFILE = 'minimal'
+    const { POST } = await import('./route')
+    const req = new Request('http://localhost:3000/auth/sign-out', {
+      method: 'POST',
+    }) as unknown as import('next/server').NextRequest
+
+    await POST(req)
+    expect(mockNextAuthSignOut).not.toHaveBeenCalled()
+  })
+
+  it('(NextAuth) vps-next-mariadb: NextAuth signOut rejection is caught — still 303 + clears mock_session', async () => {
+    process.env.DEPLOY_PROFILE = 'vps-next-mariadb'
+    mockNextAuthSignOut.mockRejectedValueOnce(new Error('NEXTAUTH_SECRET missing'))
     const { POST } = await import('./route')
     const req = new Request('http://localhost:3000/auth/sign-out', {
       method: 'POST',
