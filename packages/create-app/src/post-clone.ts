@@ -285,7 +285,9 @@ export async function patchRootConfigs(
   // must be excluded from TypeScript type-checking.
   const allPrismaRemoved = deployProfile === 'pro';
 
-  if (!apiRemoved && !mariadbRemoved && !allPrismaRemoved) return;
+  const mariadbOnly =
+    deployProfile === 'vps-next-mariadb' || deployProfile === 'vps-nest-mariadb';
+  if (!apiRemoved && !mariadbRemoved && !allPrismaRemoved && !mariadbOnly) return;
 
   // Patch tsconfig.json
   const tsconfigPath = join(targetDir, 'tsconfig.json');
@@ -308,6 +310,18 @@ export async function patchRootConfigs(
     if (mariadbRemoved) {
       // prisma-mariadb.ts uses webpackIgnore to skip webpack bundling, but
       // TypeScript still resolves the import() path at type-check time.
+      excludeEntries.push('src/lib/infrastructure/prisma-mariadb.ts');
+    }
+
+    // For mariadb-only profiles (vps-next-mariadb, vps-nest-mariadb), the
+    // postgres @prisma/client is NOT generated because prisma/schema.prisma is
+    // pruned. prisma-mariadb.ts contains compile-time drift guards that import
+    // type { User, Account, AuditLog } from '@prisma/client' — these fail with
+    // TS2307 if the postgres client was never generated.
+    // We exclude prisma-mariadb.ts from tsc type-checking for these profiles.
+    // The file still exists and runs correctly at runtime (only mariadb client
+    // is needed, and that is generated from prisma/mariadb/schema.prisma).
+    if (mariadbOnly) {
       excludeEntries.push('src/lib/infrastructure/prisma-mariadb.ts');
     }
 
