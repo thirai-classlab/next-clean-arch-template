@@ -7,7 +7,7 @@
 // exactly. container.ts uses these strings as property keys on the dynamic
 // import result (mod[className]). A mismatch silently skips registration.
 
-export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps'] as const
+export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres'] as const
 export type DeployProfile = (typeof DEPLOY_PROFILES)[number]
 
 export const PORT_NAMES = [
@@ -136,5 +136,28 @@ export const PROFILE_ADAPTER_MAPPING: Readonly<
     WebhookVerifierPort: 'RecallAiVerifierAdapter',
     InternalRpcPort: 'HttpRpcAdapter',
     RateLimiterPort: 'UpstashRateLimiterAdapter',
+  }),
+  // vps-next-postgres: Self-hosted VPS with PostgreSQL + NextAuth v5 (no Supabase).
+  // AuthPort: NextAuthAdapter (NextAuth v5 JWT strategy + PrismaAdapter + bcrypt).
+  // DbPort: PostgresDbAdapter (same as vps — direct Postgres connection via Prisma).
+  // All non-auth ports mirror the vps profile (self-hosted infrastructure stack).
+  // RateLimiterPort: InMemoryRateLimiterAdapter (Upstash upgrade path available later).
+  'vps-next-postgres': Object.freeze({
+    AuthPort: 'NextAuthAdapter',
+    DbPort: 'PostgresDbAdapter',
+    RealtimePort: 'LivekitWebSocketAdapter',
+    StoragePort: 'S3CompatibleStorageAdapter',
+    QueuePort: 'RailwayBullMQAdapter',
+    EmailPort: 'SmtpEmailAdapter',
+    BotOrchestratorPort: 'RecallAiBotAdapter',
+    TranscriptionPort: 'RecallAiTranscriptionAdapter',
+    CalendarPort: 'GoogleAndMsGraphCalendarAdapter',
+    LocalInferencePort: 'OllamaInferenceAdapter',
+    VideoProcessorPort: 'FfmpegSelfHostedAdapter',
+    ContinuousMonitoringPort: 'PrometheusGrafanaAdapter',
+    MediaServerPort: 'LivekitSelfHostedMediaAdapter',
+    WebhookVerifierPort: 'RecallAiVerifierAdapter',
+    InternalRpcPort: 'HttpRpcAdapter',
+    RateLimiterPort: 'InMemoryRateLimiterAdapter',
   }),
 })

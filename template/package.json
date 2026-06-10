@@ -8,6 +8,7 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "prebuild": "pnpm env:validate",
+    "postinstall": "[ -f prisma/schema.prisma ] && DATABASE_URL=postgresql://x:x@localhost/x prisma generate || true",
     "start": "next start -p 3000",
     "lint": "eslint src --ext .ts,.tsx",
     "lint:next": "next lint",
@@ -20,9 +21,16 @@
     "deps:check": "madge --circular --extensions ts src/lib/",
     "deps:layers": "madge --no-color --extensions ts src/lib/",
     "bundle:check": "node scripts/bundle-size.mjs",
-    "test:template-iso": "bash e2e/template-iso/fresh-install.test.sh"
+    "test:template-iso": "bash e2e/template-iso/fresh-install.test.sh",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "db:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "tsx scripts/seed-users.ts"
   },
   "dependencies": {
+    "@auth/prisma-adapter": "^2.11.2",
     "@chakra-ui/react": "^3.35.0",
     "@emotion/react": "^11.14.0",
     "@hookform/resolvers": "^3.10.0",
@@ -41,7 +49,10 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "lucide-react": "^1.16.0",
+    "@prisma/client": "^6.9.0",
+    "bcryptjs": "^3.0.3",
     "next": "^14.2.0",
+    "next-auth": "5.0.0-beta.31",
     "next-themes": "^0.4.6",
     "pino": "^10.3.1",
     "react": "^18.3.0",
@@ -56,6 +67,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
+    "@types/bcryptjs": "^2.4.6",
     "@eslint/eslintrc": "^3.3.5",
     "@next/env": "^14.2.0",
     "@vercel/config": "^0.5.0",
@@ -73,6 +85,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^29.1.1",
     "madge": "^8.0.0",
+    "prisma": "^6.9.0",
     "postcss": "^8.5.15",
     "tsx": "^4.22.3",
     "typescript": "^5.4.0",

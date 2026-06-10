@@ -107,6 +107,7 @@ const ADAPTER_MODULE_MAP: Readonly<Record<string, string>> = Object.freeze({
   // the absent file is tolerated exactly like other not-yet-shipped adapters.
   UpstashRateLimiterAdapter: './adapters/real/upstash-rate-limiter.adapter',
   // ── Real adapters (Wave 5-I and later — files may not exist yet) ──────
+  NextAuthAdapter: './adapters/real/nextauth-auth.adapter',
   SupabaseAuthAdapter: './adapters/real/supabase-auth.adapter',
   SupabaseDbAdapter: './adapters/real/supabase-db.adapter',
   SupabaseRealtimeAdapter: './adapters/real/supabase-realtime.adapter',
@@ -361,14 +362,20 @@ async function doBootstrap(): Promise<void> {
   // Wire it here with a LITERAL-path import (webpack-traceable, the same proven
   // pattern as registerMockAdapters) so the gate always resolves.
   await registerRateLimiterPort(profile)
+  // vps-next-postgres: register PrismaUserRepository as the UserRepository token.
+  // This is only loaded when the profile explicitly requests Prisma-backed storage.
+  // The literal import path is used so webpack can trace the module into the bundle.
+  if (profile === 'vps-next-postgres') {
+    await registerPrismaRepositories()
+  }
 }
 
 /**
  * Explicitly register RateLimiterPort for non-MOCK profiles via a literal-path
  * dynamic import so webpack traces the module into the Server Action bundle.
  *
- * - minimal / unlocked → InMemoryRateLimiterAdapter (single-instance, shipped).
- * - pro / vps          → UpstashRateLimiterAdapter (multi-instance) is not yet
+ * - minimal / unlocked / vps-next-postgres → InMemoryRateLimiterAdapter (single-instance, shipped).
+ * - pro / vps → UpstashRateLimiterAdapter (multi-instance) is not yet
  *   shipped; leave RateLimiterPort UNREGISTERED so a misconfigured pro/vps boot
  *   fails loudly rather than silently falling back to the in-memory limiter
  *   (mirrors the fail-loud contract asserted in container.spec.ts).
@@ -380,6 +387,60 @@ async function registerRateLimiterPort(profile: DeployProfile): Promise<void> {
   }
   const mod = await import('./adapters/real/in-memory-rate-limiter.adapter')
   registerPort('RateLimiterPort', mod.InMemoryRateLimiterAdapter)
+}
+
+/**
+ * Register Prisma-backed repositories for the vps-next-postgres profile.
+ *
+ * Uses literal-path dynamic import so webpack can statically trace the module
+ * into the Server Action bundle (the same pattern as registerMockRepositories).
+ * Only called when DEPLOY_PROFILE=vps-next-postgres and MOCK_MODE !== 'true'.
+ *
+ * Currently registers:
+ *   - UserRepository → PrismaUserRepository
+ * Other repositories (AllowedUser, AuditLog, etc.) remain as in-memory until
+ * their Prisma implementations are shipped in a later wave.
+ */
+async function registerPrismaRepositories(): Promise<void> {
+  const [
+    userMod,
+    // In-memory repositories for ports not yet backed by Prisma in this wave.
+    allowedUserMod,
+    auditLogMod,
+    botMod,
+    recordingMod,
+    transcriptMod,
+    calendarEventMod,
+    webhookEventMod,
+  ] = await Promise.all([
+    import('./repositories/prisma/prisma-user.repository'),
+    import('./repositories/in-memory/in-memory-allowed-user.repository'),
+    import('./repositories/in-memory/in-memory-audit-log.repository'),
+    import('./repositories/in-memory/in-memory-bot.repository'),
+    import('./repositories/in-memory/in-memory-recording.repository'),
+    import('./repositories/in-memory/in-memory-transcript.repository'),
+    import('./repositories/in-memory/in-memory-calendar-event.repository'),
+    import('./repositories/in-memory/in-memory-webhook-event.repository'),
+  ])
+
+  const repoBindings: ReadonlyArray<[string, new (...args: never[]) => unknown]> = [
+    ['UserRepository', userMod.PrismaUserRepository],
+    ['AllowedUserRepository', allowedUserMod.InMemoryAllowedUserRepository],
+    ['AuditLogRepository', auditLogMod.InMemoryAuditLogRepository],
+    ['BotRepository', botMod.InMemoryBotRepository],
+    ['RecordingRepository', recordingMod.InMemoryRecordingRepository],
+    ['TranscriptRepository', transcriptMod.InMemoryTranscriptRepository],
+    ['CalendarEventRepository', calendarEventMod.InMemoryCalendarEventRepository],
+    ['WebhookEventRepository', webhookEventMod.InMemoryWebhookEventRepository],
+  ]
+
+  for (const [token, ctor] of repoBindings) {
+    container.register(
+      token,
+      { useClass: ctor },
+      { lifecycle: Lifecycle.Singleton },
+    )
+  }
 }
 
 export function ensureContainer(): Promise<void> {

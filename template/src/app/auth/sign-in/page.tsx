@@ -6,6 +6,9 @@
 //   (sso / email-pass / both) を `loginMethods` prop で Client に渡す。private env
 //   は getValidatedEnv() 経由 (NEXT_PUBLIC_ 不使用、SEC-MED-02)。MOCK_MODE で
 //   email-pass/both のときは seed credential ヒントを <Alert variant="info"> で表示。
+// vps-next-postgres: profile-specific actions are resolved server-side and passed as
+//   props to GoogleSignInButton / EmailPasswordForm so that UI components remain
+//   profile-agnostic (no client-side bundle leakage of unused profiles' actions).
 //
 // This is a Server Component (no 'use client'): it reads server-only env via
 // getValidatedEnv() and renders the interactive strategy UI as a Client leaf.
@@ -27,12 +30,56 @@ import { SignInStrategy, type LoginMethods } from './SignInStrategy'
 // `reflect-metadata`.)
 export const dynamic = 'force-dynamic'
 
-export default function SignInPage() {
+export default async function SignInPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ error?: string }>
+}) {
   const env = getValidatedEnv()
   const loginMethods = env.LOGIN_STRATEGY as LoginMethods
   const isMock = env.MOCK_MODE === 'true'
+  const isVpsNextPostgres = env.DEPLOY_PROFILE === 'vps-next-postgres'
   const showsPasswordForm = loginMethods !== 'sso'
   const showSeedHint = isMock && showsPasswordForm
+
+  // Resolve profile-specific actions for the VPS profile.
+  // Actions are imported conditionally at module evaluation time but
+  // only wired when the profile matches.
+  let googleAction: (() => Promise<void>) | undefined
+  let passwordAction:
+    | ((
+        prevState: import('@/lib/interfaces/actions/sign-in.action').SignInWithPasswordState | null,
+        formData: FormData,
+      ) => Promise<import('@/lib/interfaces/actions/sign-in.action').SignInWithPasswordState>)
+    | undefined
+
+  if (isVpsNextPostgres) {
+    const vpsActions = await import('@/lib/interfaces/actions/sign-in-vps.action')
+    googleAction = vpsActions.signInWithGoogleVpsAction
+    passwordAction = vpsActions.signInWithPasswordVpsAction
+  }
+
+  // Resolve error from query params (e.g., AccessDenied from NextAuth domain check).
+  // Whitelist known NextAuth error codes — unknown values are ignored entirely
+  // so a crafted ?error=<anything> URL cannot surface an alert (social
+  // engineering hardening; the raw value is never rendered either way).
+  // 'oauth' is our own code from sign-in-vps.action.ts signInWithGoogleVpsAction.
+  const KNOWN_AUTH_ERRORS = [
+    'AccessDenied',
+    'OAuthSignin',
+    'OAuthCallback',
+    'OAuthAccountNotLinked',
+    'CredentialsSignin',
+    'Configuration',
+    'Signin',
+    'oauth',
+  ]
+  const resolvedSearchParams = await searchParams
+  const rawAuthError = resolvedSearchParams?.error
+  const authError =
+    rawAuthError && KNOWN_AUTH_ERRORS.includes(rawAuthError)
+      ? rawAuthError
+      : undefined
 
   // Seed credential values are server-resolved (never literal-inlined here, ui
   // LOW-R3-1). SEED_EMAIL / SEED_PASSWORD are the SSoT defaults from the pure
@@ -76,7 +123,26 @@ export default function SignInPage() {
           </Box>
 
           <Stack gap="4">
-            <SignInStrategy loginMethods={loginMethods} />
+            {authError === 'AccessDenied' && (
+              <Alert variant="danger" title="サインインが拒否されました">
+                <Text size="sm">
+                  このメールアドレスはサインインが許可されていません。
+                </Text>
+              </Alert>
+            )}
+            {authError && authError !== 'AccessDenied' && (
+              <Alert variant="danger" title="サインインエラー">
+                <Text size="sm">
+                  サインイン中にエラーが発生しました。もう一度お試しください。
+                </Text>
+              </Alert>
+            )}
+
+            <SignInStrategy
+              loginMethods={loginMethods}
+              googleAction={googleAction}
+              passwordAction={passwordAction}
+            />
 
             {showSeedHint && (
               <Alert variant="info" title="MOCK モード用 seed 認証情報">

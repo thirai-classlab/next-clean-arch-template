@@ -7,8 +7,11 @@
 //   - 1px neutral border, font-weight 500, official multicolor "G" logo SVG
 //   - full width; the brand accent (#2A6FDB) is intentionally NOT used here.
 //
-// Submits the `signInWithGoogleAction` Server Action (sign-in.action.ts):
-//   MOCK → writes mock_session cookie + redirect('/'); real → provider OAuth URL.
+// Default: submits signInWithGoogleAction (Supabase/MOCK path).
+// vps-next-postgres: accepts `googleAction` prop from parent (Server Component)
+//   which injects signInWithGoogleVpsAction for the NextAuth OAuth path.
+//   The prop approach avoids importing both actions in this client bundle.
+//
 // useFormStatus (react-dom) drives the pending state and must be read from a
 // child of the <form>, so the button lives in its own component.
 
@@ -67,9 +70,19 @@ function GoogleButton() {
   )
 }
 
-export function GoogleSignInButton() {
+interface GoogleSignInButtonProps {
+  /**
+   * Profile-specific Server Action for Google sign-in.
+   * When provided (vps-next-postgres), this replaces signInWithGoogleAction.
+   * When undefined, the default signInWithGoogleAction is used.
+   */
+  googleAction?: () => Promise<void>
+}
+
+export function GoogleSignInButton({ googleAction }: GoogleSignInButtonProps = {}) {
+  const action = googleAction ?? signInWithGoogleAction
   return (
-    <form action={signInWithGoogleAction}>
+    <form action={action}>
       <GoogleButton />
     </form>
   )

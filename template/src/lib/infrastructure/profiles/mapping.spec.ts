@@ -1,6 +1,7 @@
 // src/lib/infrastructure/profiles/mapping.spec.ts
-// Verifies the 4 Deploy Profile × 16 Port adapter mapping table
-// matches draft 06 §3.2 + task-36 (64 entries total).
+// Verifies the Deploy Profile × 16 Port adapter mapping table
+// matches draft 06 §3.2 + task-36 (original 4 profiles = 64 entries)
+// and vps-next-postgres addition (5 profiles = 80 entries total).
 
 import { describe, it, expect } from 'vitest'
 import {
@@ -12,15 +13,15 @@ import {
 } from './mapping'
 
 describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
-  it('lists exactly 4 Deploy Profiles', () => {
-    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps'])
+  it('lists exactly 5 Deploy Profiles (4 original + vps-next-postgres)', () => {
+    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres'])
   })
 
   it('lists exactly 16 Port names', () => {
     expect(PORT_NAMES).toHaveLength(16)
   })
 
-  it('declares an adapter for every (profile × port) combination = 64 entries', () => {
+  it('declares an adapter for every (profile × port) combination = 80 entries', () => {
     let count = 0
     for (const profile of DEPLOY_PROFILES) {
       for (const port of PORT_NAMES) {
@@ -30,25 +31,38 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
         count++
       }
     }
-    expect(count).toBe(64)
+    expect(count).toBe(80)
   })
 
-  it('maps AuthPort to SupabaseAuthAdapter on all 4 profiles', () => {
-    for (const profile of DEPLOY_PROFILES) {
+  it('maps AuthPort to SupabaseAuthAdapter on the 4 original profiles', () => {
+    const supabaseProfiles: DeployProfile[] = ['minimal', 'unlocked', 'pro', 'vps']
+    for (const profile of supabaseProfiles) {
       expect(PROFILE_ADAPTER_MAPPING[profile].AuthPort).toBe('SupabaseAuthAdapter')
     }
   })
 
-  it('maps QueuePort to BullMQ on vps and VercelQueue elsewhere', () => {
+  it('maps AuthPort to NextAuthAdapter on vps-next-postgres', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].AuthPort).toBe('NextAuthAdapter')
+  })
+
+  it('maps QueuePort to BullMQ on vps profiles and VercelQueue on Vercel profiles', () => {
     expect(PROFILE_ADAPTER_MAPPING.minimal.QueuePort).toBe('VercelQueueAdapter')
     expect(PROFILE_ADAPTER_MAPPING.unlocked.QueuePort).toBe('VercelQueueAdapter')
     expect(PROFILE_ADAPTER_MAPPING.pro.QueuePort).toBe('VercelQueueAdapter')
     expect(PROFILE_ADAPTER_MAPPING.vps.QueuePort).toBe('RailwayBullMQAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].QueuePort).toBe('RailwayBullMQAdapter')
   })
 
-  it('maps DbPort to PostgresDb on vps and SupabaseDb elsewhere', () => {
+  it('maps DbPort to PostgresDb on vps profiles and SupabaseDb on Vercel profiles', () => {
     expect(PROFILE_ADAPTER_MAPPING.minimal.DbPort).toBe('SupabaseDbAdapter')
     expect(PROFILE_ADAPTER_MAPPING.vps.DbPort).toBe('PostgresDbAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].DbPort).toBe('PostgresDbAdapter')
+  })
+
+  it('maps RateLimiterPort to InMemoryRateLimiterAdapter on vps-next-postgres', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].RateLimiterPort).toBe(
+      'InMemoryRateLimiterAdapter',
+    )
   })
 
   it('exposes types DeployProfile and PortName', () => {
