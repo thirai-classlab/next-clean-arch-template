@@ -1,0 +1,153 @@
+/* =========================================================
+ * Recall.ai POC — Design Tokens
+ *
+ * SSoT: docs/draft/07_component-library.md §Design Token 一覧
+ *
+ * Structure:
+ *   1. Color Semantic Tokens (18) — light / dark theme
+ *   2. Typography Tokens (14)     — :root
+ *   3. Spacing (8) + Radius (5) + Shadow (4) + Motion (6) — :root
+ * ========================================================= */
+
+/* ─── Color Semantic Tokens — Light Theme ────────────────── */
+/* :root = fallback default (light), .light = next-themes class output,
+ * both satisfy Chakra v3 _dark condition (.dark class selector).
+ * Fix: was [data-theme="light"] — structural mismatch with Chakra v3 _dark. */
+:root,
+.light {
+  /* Background */
+  --color-bg-base:        oklch(99% 0 0);
+  --color-bg-elevated:    oklch(100% 0 0);
+  /* sunken = recessed surfaces (code/snippet/input/select/preview, hover/selected rows).
+   * Kept perceptibly darker than elevated (100%) so code blocks read as a clearly
+   * distinct recessed panel rather than a near-invisible ~4% wash. 93% gives a ~7%
+   * lightness delta against the card while staying within the Linear-ish light range. */
+  --color-bg-sunken:      oklch(93% 0 0);
+  --color-bg-overlay:     oklch(100% 0 0 / 0.95);
+
+  /* Foreground */
+  --color-fg-default:     oklch(18% 0 0);
+  --color-fg-muted:       oklch(50% 0 0);
+  --color-fg-subtle:      oklch(70% 0 0);
+
+  /* Accent (Linear blue #2A6FDB 相当) */
+  --color-accent:         oklch(55% 0.18 250);
+  --color-accent-text:    oklch(45% 0.20 250); /* text 用 accent: 4.5:1 contrast 保証 (WCAG AA) */
+  --color-accent-hover:   oklch(50% 0.18 250);
+  --color-accent-subtle:  oklch(95% 0.05 250);
+
+  /* Danger */
+  --color-danger:         oklch(55% 0.20 25);
+  --color-danger-subtle:  oklch(96% 0.04 25);
+
+  /* Success */
+  --color-success:        oklch(55% 0.18 145);
+  --color-success-subtle: oklch(96% 0.04 145);
+
+  /* Warning */
+  --color-warning:        oklch(70% 0.18 75);
+  --color-warning-subtle: oklch(97% 0.04 75);
+
+  /* Border */
+  --color-border:         oklch(88% 0 0);
+  --color-border-strong:  oklch(70% 0 0);
+}
+
+/* ─── Color Semantic Tokens — Dark Theme ─────────────────── */
+/* .dark = next-themes class output = Chakra v3 _dark condition selector.
+ * Fix: was [data-theme="dark"] — structural mismatch with Chakra v3 _dark. */
+.dark {
+  /* Background */
+  --color-bg-base:        oklch(12% 0 0);
+  --color-bg-elevated:    oklch(16% 0 0);
+  --color-bg-sunken:      oklch(10% 0 0);
+  --color-bg-overlay:     oklch(18% 0 0 / 0.95);
+
+  /* Foreground */
+  --color-fg-default:     oklch(93% 0 0);
+  --color-fg-muted:       oklch(60% 0 0);
+  --color-fg-subtle:      oklch(40% 0 0);
+
+  /* Accent */
+  --color-accent:         oklch(65% 0.18 250);
+  --color-accent-text:    oklch(70% 0.20 250); /* text 用 accent: dark theme 4.5:1 contrast 保証 */
+  --color-accent-hover:   oklch(70% 0.18 250);
+  --color-accent-subtle:  oklch(20% 0.08 250);
+
+  /* Danger */
+  --color-danger:         oklch(65% 0.20 25);
+  --color-danger-subtle:  oklch(18% 0.06 25);
+
+  /* Success */
+  --color-success:        oklch(65% 0.18 145);
+  --color-success-subtle: oklch(18% 0.06 145);
+
+  /* Warning */
+  --color-warning:        oklch(75% 0.18 75);
+  --color-warning-subtle: oklch(18% 0.06 75);
+
+  /* Border */
+  --color-border:         oklch(25% 0 0);
+  --color-border-strong:  oklch(35% 0 0);
+}
+
+/* ─── Typography Tokens ──────────────────────────────────── */
+:root {
+  /* Font families */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Font sizes (fluid / clamp) */
+  --text-xs:  clamp(0.7rem, 0.68rem + 0.1vw, 0.75rem);
+  --text-sm:  clamp(0.8rem, 0.78rem + 0.1vw, 0.875rem);
+  --text-md:  clamp(0.9rem, 0.88rem + 0.1vw, 1rem);
+  --text-lg:  clamp(1rem, 0.96rem + 0.2vw, 1.125rem);
+  --text-xl:  clamp(1.125rem, 1.05rem + 0.35vw, 1.25rem);
+  --text-2xl: clamp(1.25rem, 1.1rem + 0.75vw, 1.5rem);
+  --text-3xl: clamp(1.5rem, 1.2rem + 1.5vw, 2rem);
+  --text-4xl: clamp(1.875rem, 1.4rem + 2.4vw, 2.5rem);
+  --text-5xl: clamp(2.25rem, 1.5rem + 3.75vw, 3.5rem);
+  --text-6xl: clamp(2.75rem, 1.5rem + 6.25vw, 5rem);
+
+  /* Line heights */
+  --leading-tight:   1.2;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.75;
+
+  /* Font weights */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ─── Spacing Tokens ─────────────────────────────────────── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ─── Radius Tokens ──────────────────────────────────────── */
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-full: 9999px;
+
+  /* ─── Shadow Tokens ──────────────────────────────────────── */
+  --shadow-sm:      0 1px 2px oklch(0% 0 0 / 0.06);
+  --shadow-md:      0 4px 6px oklch(0% 0 0 / 0.08), 0 1px 3px oklch(0% 0 0 / 0.04);
+  --shadow-lg:      0 10px 15px oklch(0% 0 0 / 0.10), 0 4px 6px oklch(0% 0 0 / 0.05);
+  --shadow-overlay: 0 20px 40px oklch(0% 0 0 / 0.16);
+
+  /* ─── Motion Tokens ──────────────────────────────────────── */
+  --duration-fast:   100ms;
+  --duration-normal: 200ms;
+  --duration-slow:   350ms;
+  --ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:     cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring:     cubic-bezier(0.34, 1.56, 0.64, 1);
+}
