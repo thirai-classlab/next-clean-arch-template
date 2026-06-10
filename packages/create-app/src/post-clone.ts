@@ -167,6 +167,21 @@ export async function prunePatternFiles(
       r('scripts/seed-users.ts'),
       // prisma-mariadb.ts is only for vps-*-mariadb profiles; remove for non-mariadb
       r('src/lib/infrastructure/prisma-mariadb.ts'),
+      // NextAuth (Auth.js) is only for vps profiles — vercel/pro uses Supabase auth.
+      // src/auth.ts imports @auth/prisma-adapter which requires a generated Prisma
+      // client at bundle-collection time. Pruning auth.ts + the nextauth route
+      // prevents webpack from bundling the prisma-adapter → @prisma/client chain.
+      r('src/auth.ts'),
+      r('src/auth.spec.ts'),
+      r('src/app/api/auth/[...nextauth]'),
+      // VPS-specific sign-in actions that import from '@/auth' (src/auth.ts)
+      r('src/lib/interfaces/actions/sign-in-vps.action.ts'),
+      r('src/lib/interfaces/actions/sign-in-vps-nest.action.ts'),
+      r('src/lib/interfaces/actions/sign-in-vps-nest.action.spec.ts'),
+      // NextAuthAdapter imports getProfilePrismaClient → prisma.ts → @prisma/client
+      r('src/lib/infrastructure/adapters/real/nextauth-auth.adapter.ts'),
+      // PrismaUserRepository imports ProfilePrismaClient type from prisma-client.ts
+      r('src/lib/infrastructure/repositories/prisma/prisma-user.repository.ts'),
     );
   } else if (deployProfile === 'vps-next-postgres') {
     removals.push(
