@@ -5,6 +5,7 @@
  * 環境: node (jsdom 不要)
  */
 import { execSync } from 'node:child_process'
+import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
   supabaseEnvSchema,
@@ -905,7 +906,11 @@ describe('env-validate.ts (integration)', () => {
 
     try {
       const output = execSync('pnpm tsx scripts/env-validate.ts', {
-        cwd: '/Users/t.hirai/recall_poc/apps/web',
+        // template package root (= dir containing scripts/env-validate.ts),
+        // resolved relative to this test file so it works in CI / any checkout.
+        // NOTE: import.meta.url is not a file:// URL under vitest jsdom env,
+        // so use the vite-node __dirname shim instead.
+        cwd: path.resolve(__dirname, '../..'),
         env: { ...process.env, ...cleanEnv },
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],

@@ -58,10 +58,15 @@ export function validate(config: Record<string, unknown>): NestEnvConfig {
   const isMock = config['MOCK_MODE'] === 'true'
 
   // In test/mock mode, inject placeholder values so NestJS can bootstrap.
+  // AUTH_GOOGLE_ID/SECRET: GoogleStrategy is registered unconditionally and
+  // passport-oauth2 throws on an empty clientID, so e2e bootstrap (CI has no
+  // OAuth credentials) needs non-empty dummies.
   if (isTest || isMock) {
     config = {
       JWT_SECRET: 'test-secret-at-least-32-characters-long',
       DATABASE_URL: 'postgresql://localhost:5432/test',
+      AUTH_GOOGLE_ID: 'test-google-client-id',
+      AUTH_GOOGLE_SECRET: 'test-google-client-secret',
       ...config,
     }
   }

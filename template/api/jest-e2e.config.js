@@ -9,6 +9,9 @@ module.exports = {
     }],
   },
   testEnvironment: 'node',
+  // Hermetic env defaults (LOGIN_STRATEGY etc.) — must run before module
+  // imports because ConfigModule.forRoot() validates process.env eagerly.
+  setupFiles: ['<rootDir>/e2e/setup-env.ts'],
   moduleNameMapper: {
     '^@shared/(.*)$': '<rootDir>/../src/lib/$1',  // rootDir is api/, so ../src goes to template/src
   },
