@@ -69,8 +69,16 @@ export async function getProfilePrismaClient(
     // (MODULE_NOT_FOUND). The import is safe at runtime because this branch is
     // only reached when DEPLOY_PROFILE is a mariadb variant, i.e. the file
     // is always present when this code actually executes.
+    //
+    // The path is cast `as string` to prevent TypeScript from statically
+    // resolving the module path at type-check time. Without this cast,
+    // `tsc --noEmit` (run by `next build`) would fail with TS2307
+    // "Cannot find module './prisma-mariadb'" on profiles where the file was
+    // pruned by the CLI post-clone step. `as string` makes the specifier
+    // opaque to the TypeScript checker (it sees `import(string)` → `any`),
+    // which is correct: the import is intentionally conditional.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const mod = await import(/* webpackIgnore: true */ './prisma-mariadb')
+    const mod = await import(/* webpackIgnore: true */ './prisma-mariadb' as string)
     // SAFETY: the mariadb-generated client cannot be ASSIGNED to the
     // postgres-typed contract because provider-specific filter surfaces
     // differ by design (StringFilter.mode / QueryMode is postgres-only and
