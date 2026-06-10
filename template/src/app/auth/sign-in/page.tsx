@@ -38,7 +38,8 @@ export default async function SignInPage({
   const env = getValidatedEnv()
   const loginMethods = env.LOGIN_STRATEGY as LoginMethods
   const isMock = env.MOCK_MODE === 'true'
-  const isVpsNextPostgres = env.DEPLOY_PROFILE === 'vps-next-postgres'
+  const isVpsNextPostgres =
+    env.DEPLOY_PROFILE === 'vps-next-postgres' || env.DEPLOY_PROFILE === 'vps-next-mariadb'
   const showsPasswordForm = loginMethods !== 'sso'
   const showSeedHint = isMock && showsPasswordForm
 

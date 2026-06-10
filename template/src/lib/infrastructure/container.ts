@@ -362,11 +362,12 @@ async function doBootstrap(): Promise<void> {
   // Wire it here with a LITERAL-path import (webpack-traceable, the same proven
   // pattern as registerMockAdapters) so the gate always resolves.
   await registerRateLimiterPort(profile)
-  // vps-next-postgres: register PrismaUserRepository as the UserRepository token.
-  // This is only loaded when the profile explicitly requests Prisma-backed storage.
-  // The literal import path is used so webpack can trace the module into the bundle.
-  if (profile === 'vps-next-postgres') {
-    await registerPrismaRepositories()
+  // vps-next-postgres / vps-next-mariadb: register PrismaUserRepository as the
+  // UserRepository token. This is only loaded when the profile explicitly requests
+  // Prisma-backed storage. The literal import path is used so webpack can trace
+  // the module into the bundle.
+  if (profile === 'vps-next-postgres' || profile === 'vps-next-mariadb') {
+    await registerPrismaRepositories(profile)
   }
 }
 
@@ -390,18 +391,30 @@ async function registerRateLimiterPort(profile: DeployProfile): Promise<void> {
 }
 
 /**
- * Register Prisma-backed repositories for the vps-next-postgres profile.
+ * Register Prisma-backed repositories for vps-next-postgres or vps-next-mariadb profiles.
  *
  * Uses literal-path dynamic import so webpack can statically trace the module
  * into the Server Action bundle (the same pattern as registerMockRepositories).
- * Only called when DEPLOY_PROFILE=vps-next-postgres and MOCK_MODE !== 'true'.
+ * Only called when DEPLOY_PROFILE=vps-next-postgres|vps-next-mariadb and MOCK_MODE !== 'true'.
+ *
+ * For vps-next-postgres: PrismaUserRepository receives the default
+ *   @prisma/client singleton (prisma.ts — PostgreSQL provider).
+ * For vps-next-mariadb: PrismaUserRepository receives the custom
+ *   prisma-mariadb singleton (prisma-mariadb.ts — MySQL/MariaDB provider,
+ *   custom output path).
+ *
+ * The client is passed to PrismaUserRepository via its CONSTRUCTOR and the
+ * instance is registered with useValue. (CRITICAL fix: the repository
+ * previously imported the postgres singleton at module level, so the mariadb
+ * profile silently executed every query through the postgresql-provider
+ * client against a mysql:// DATABASE_URL.)
  *
  * Currently registers:
- *   - UserRepository → PrismaUserRepository
+ *   - UserRepository → PrismaUserRepository (profile-correct Prisma client)
  * Other repositories (AllowedUser, AuditLog, etc.) remain as in-memory until
  * their Prisma implementations are shipped in a later wave.
  */
-async function registerPrismaRepositories(): Promise<void> {
+async function registerPrismaRepositories(profile: DeployProfile): Promise<void> {
   const [
     userMod,
     // In-memory repositories for ports not yet backed by Prisma in this wave.
@@ -423,8 +436,24 @@ async function registerPrismaRepositories(): Promise<void> {
     import('./repositories/in-memory/in-memory-webhook-event.repository'),
   ])
 
+  // Select the appropriate Prisma client singleton based on the active profile
+  // (literal import paths — webpack traces both into the Server Action bundle;
+  // only the profile-matching branch executes at runtime).
+  // vps-next-postgres → @prisma/client (PostgreSQL, default client)
+  // vps-next-mariadb  → prisma/mariadb/.prisma/client (MySQL/MariaDB, custom output)
+  const { getProfilePrismaClient } = await import('./prisma-client')
+  const prismaClient = await getProfilePrismaClient(profile)
+
+  // PrismaUserRepository takes the Prisma client as a constructor argument, so
+  // the SAME repository class runs against the profile-correct client. It is
+  // registered as a pre-built value (NOT useClass) — tsyringe must never try
+  // to auto-resolve the PrismaClient constructor parameter, which would
+  // instantiate a fresh postgres-provider client regardless of profile.
+  container.register('UserRepository', {
+    useValue: new userMod.PrismaUserRepository(prismaClient),
+  })
+
   const repoBindings: ReadonlyArray<[string, new (...args: never[]) => unknown]> = [
-    ['UserRepository', userMod.PrismaUserRepository],
     ['AllowedUserRepository', allowedUserMod.InMemoryAllowedUserRepository],
     ['AuditLogRepository', auditLogMod.InMemoryAuditLogRepository],
     ['BotRepository', botMod.InMemoryBotRepository],

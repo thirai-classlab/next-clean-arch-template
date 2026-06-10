@@ -88,11 +88,15 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   //     Supabase env 未設定時は updateSession 内で graceful skip されるため問題なし。
   //   - getSessionStatus() (Supabase pending check) は vps-next-postgres では null を返すため
   //     pending redirect は発火しない (= behavior-preserving)。
-  const isVpsNextPostgres = process.env.DEPLOY_PROFILE === 'vps-next-postgres'
+  // Both vps-next-postgres and vps-next-mariadb use NextAuth v5 JWT strategy.
+  // The role is resolved from the NextAuth JWT cookie (Edge-safe, no Supabase).
+  const isVpsNextAuthProfile =
+    process.env.DEPLOY_PROFILE === 'vps-next-postgres' ||
+    process.env.DEPLOY_PROFILE === 'vps-next-mariadb'
 
   let role: string | null
-  if (isVpsNextPostgres) {
-    // vps-next-postgres: read role from NextAuth JWT cookie (Edge-safe, no Supabase).
+  if (isVpsNextAuthProfile) {
+    // vps-next-postgres / vps-next-mariadb: read role from NextAuth JWT cookie.
     role = await getNextAuthSessionRole(request)
   } else {
     // Supabase path (all other profiles): Supabase session takes priority,

@@ -9,6 +9,12 @@ on:
 # - pnpm workspace 構成のため `pnpm install` は root で 1 度。
 # - test / type-check / build は `pnpm --filter @takuma-hirai/create-app` で CLI package のみに絞る
 #   (template/ は実 build せず、CLI 経由 fetch されるため CI build 不要)。
+#
+# NOTE (vps-next-mariadb profile, HIGH fix):
+# - `template-drift` job: prisma/schema.prisma (postgresql) と
+#   prisma/mariadb/schema.prisma (mysql) の dual-schema drift guard
+#   (`pnpm check:schema-drift`) + template unit tests を PR ごとに強制する。
+#   これが無いと片側 schema だけの変更が CI を素通りする。
 
 jobs:
   test:
@@ -39,3 +45,24 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Dual-schema drift guard + template unit tests (vps-next-mariadb profile).
+  # - check:schema-drift fails when prisma/schema.prisma and
+  #   prisma/mariadb/schema.prisma diverge (models/fields, provider-specific
+  #   annotations normalized away by scripts/lib/schema-normalizer.ts).
+  # - the template vitest suite includes schema-drift.test.ts and the
+  #   profile-switch / sign-out NextAuth-profile regression specs.
+  template-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # postinstall generates both Prisma clients (postgres + mariadb) with
+      # dummy DATABASE_URLs — required for template type-level imports/tests.
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm --filter next-clean-arch-template check:schema-drift
+      - run: pnpm --filter next-clean-arch-template test

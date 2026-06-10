@@ -13,8 +13,16 @@ import Google from 'next-auth/providers/google'
 import Credentials from 'next-auth/providers/credentials'
 import { PrismaAdapter } from '@auth/prisma-adapter'
 import bcrypt from 'bcryptjs'
-import { prisma } from '@/lib/infrastructure/prisma'
+import type { PrismaClient } from '@prisma/client'
 import { type Role } from '@/lib/domain/value-objects/role'
+import { getProfilePrismaClient } from '@/lib/infrastructure/prisma-client'
+
+// Select the correct Prisma client based on the deploy profile.
+// vps-next-mariadb uses a separate prisma client generated from the mariadb schema
+// (mysql provider) to avoid passing a mysql:// URL to the postgresql-provider client.
+// getProfilePrismaClient() is the shared runtime dispatch (also used by
+// container.ts and NextAuthAdapter).
+const prisma = await getProfilePrismaClient()
 
 // ── Domain helpers ──────────────────────────────────────────────────────────
 
@@ -44,7 +52,14 @@ export function isEmailAllowed(
 // ── NextAuth v5 initialization ──────────────────────────────────────────────
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PrismaAdapter(prisma),
+  // SAFETY: PrismaAdapter's parameter is typed against the full
+  // postgres-generated PrismaClient, but at runtime it only uses the model
+  // delegates (user / account), which are profile-identical — enforced by the
+  // drift guards in prisma-mariadb.ts / prisma-client.ts and by
+  // `pnpm check:schema-drift` in CI. The mariadb-generated client lacks the
+  // postgres-only `createManyAndReturn` / `updateManyAndReturn` delegate
+  // methods (RETURNING is unsupported on MySQL/MariaDB), hence the assertion.
+  adapter: PrismaAdapter(prisma as PrismaClient),
 
   // JWT session strategy: no Session table written to DB.
   // All session state lives in a signed/encrypted HttpOnly cookie.

@@ -7,7 +7,7 @@
 // exactly. container.ts uses these strings as property keys on the dynamic
 // import result (mod[className]). A mismatch silently skips registration.
 
-export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres'] as const
+export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'] as const
 export type DeployProfile = (typeof DEPLOY_PROFILES)[number]
 
 export const PORT_NAMES = [
@@ -143,6 +143,31 @@ export const PROFILE_ADAPTER_MAPPING: Readonly<
   // All non-auth ports mirror the vps profile (self-hosted infrastructure stack).
   // RateLimiterPort: InMemoryRateLimiterAdapter (Upstash upgrade path available later).
   'vps-next-postgres': Object.freeze({
+    AuthPort: 'NextAuthAdapter',
+    DbPort: 'PostgresDbAdapter',
+    RealtimePort: 'LivekitWebSocketAdapter',
+    StoragePort: 'S3CompatibleStorageAdapter',
+    QueuePort: 'RailwayBullMQAdapter',
+    EmailPort: 'SmtpEmailAdapter',
+    BotOrchestratorPort: 'RecallAiBotAdapter',
+    TranscriptionPort: 'RecallAiTranscriptionAdapter',
+    CalendarPort: 'GoogleAndMsGraphCalendarAdapter',
+    LocalInferencePort: 'OllamaInferenceAdapter',
+    VideoProcessorPort: 'FfmpegSelfHostedAdapter',
+    ContinuousMonitoringPort: 'PrometheusGrafanaAdapter',
+    MediaServerPort: 'LivekitSelfHostedMediaAdapter',
+    WebhookVerifierPort: 'RecallAiVerifierAdapter',
+    InternalRpcPort: 'HttpRpcAdapter',
+    RateLimiterPort: 'InMemoryRateLimiterAdapter',
+  }),
+  // vps-next-mariadb: Self-hosted VPS with MariaDB 11 + NextAuth v5 (no Supabase).
+  // Identical auth stack to vps-next-postgres (NextAuth v5 JWT strategy + bcrypt).
+  // DbPort: PostgresDbAdapter — naming artifact; the actual database is MariaDB
+  // but the adapter class is shared since Prisma abstracts the provider.
+  // The key differentiator is the Prisma client: prisma-mariadb.ts imports from
+  // prisma/mariadb/.prisma/client (mysql provider) rather than @prisma/client.
+  // RateLimiterPort: InMemoryRateLimiterAdapter (same as vps-next-postgres).
+  'vps-next-mariadb': Object.freeze({
     AuthPort: 'NextAuthAdapter',
     DbPort: 'PostgresDbAdapter',
     RealtimePort: 'LivekitWebSocketAdapter',

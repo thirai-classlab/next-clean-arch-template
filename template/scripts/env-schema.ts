@@ -145,9 +145,9 @@ export const adminEnvSchema = z.object({
  */
 export const deploymentEnvSchema = z.object({
   DEPLOY_PROFILE: z
-    .enum(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres'], {
+    .enum(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'], {
       errorMap: () => ({
-        message: 'Must be one of: minimal, unlocked, pro, vps, vps-next-postgres',
+        message: 'Must be one of: minimal, unlocked, pro, vps, vps-next-postgres, vps-next-mariadb',
       }),
     })
     .default('minimal'),
@@ -315,6 +315,7 @@ export const fullEnvSchema = supabaseEnvSchema
     // で起動不能」になる)。vps-next-postgres の SSO credential 必須化は refinement 7 が担う。
     if (
       data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-next-mariadb' &&
       data.LOGIN_STRATEGY !== 'email-pass' &&
       data.MOCK_MODE !== 'true'
     ) {
@@ -337,13 +338,17 @@ export const fullEnvSchema = supabaseEnvSchema
     }
     // refinement 4 (task #37, H-3): 非 minimal profile での MOCK_MODE=true を禁止。
     // 本番相当の profile で MOCK 認証 bypass が有効化される事故を防ぐ。
-    // 例外: vps-next-postgres は mock adapter (DB 不要) でビルド検証するため許可する。
+    // 例外: vps-next-postgres / vps-next-mariadb は mock adapter (DB 不要) で
+    // ビルド検証するため許可する (runtime の本番流入は src/instrumentation.ts が拒否)。
+    // vps-next-postgres and vps-next-mariadb are intentionally excluded from
+    // profilesForbiddingMock — MOCK_MODE=true is allowed for build-time verification;
+    // runtime production guard is in src/instrumentation.ts.
     const profilesForbiddingMock: string[] = ['unlocked', 'pro', 'vps']
     if (profilesForbiddingMock.includes(data.DEPLOY_PROFILE) && data.MOCK_MODE === 'true') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'MOCK_MODE=true is only allowed with DEPLOY_PROFILE=minimal or vps-next-postgres (auth bypass guard)',
+          'MOCK_MODE=true is only allowed with DEPLOY_PROFILE=minimal, vps-next-postgres, or vps-next-mariadb (auth bypass guard)',
         path: ['MOCK_MODE'],
       })
     }
@@ -366,7 +371,11 @@ export const fullEnvSchema = supabaseEnvSchema
     // (fresh checkout demo) のときだけ未指定を許す。MOCK_MODE=true なら本 refinement は
     // 発火せず、4 var 不在でも success (CLAUDE.md 中核制約「API key 無しデモ」の復元)。
     // vps-next-postgres profile は Supabase 不使用 — Supabase var 不要 (refinement 7 で補完)。
-    if (data.MOCK_MODE !== 'true' && data.DEPLOY_PROFILE !== 'vps-next-postgres') {
+    if (
+      data.MOCK_MODE !== 'true' &&
+      data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-next-mariadb'
+    ) {
       const requiredInRealMode = [
         'NEXT_PUBLIC_SUPABASE_URL',
         'NEXT_PUBLIC_SUPABASE_ANON_KEY',
@@ -425,6 +434,64 @@ export const fullEnvSchema = supabaseEnvSchema
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message: `${field} is required when DEPLOY_PROFILE=vps-next-postgres, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
+              path: [field],
+            })
+          }
+        }
+      }
+    }
+    // refinement 8: vps-next-mariadb profile での必須 var チェック。
+    //
+    // Mirror of refinement 7 for the MariaDB variant. Identical auth stack
+    // (NextAuth v5 JWT strategy), only the database provider differs.
+    //
+    // 注意: refinement 4 は vps-next-mariadb + MOCK_MODE=true を意図的に許可
+    // (profilesForbiddingMock から除外、build-time / CI のビルド検証用)。
+    // 本 refinement は MOCK_MODE !== 'true' (= 実 deploy mode) のときだけ発火する。
+    //
+    // Additional DATABASE_URL shape check: if DATABASE_URL is present but does NOT
+    // start with 'mysql://' or 'mysql+srv://', emit a custom issue explaining the
+    // mysql:// requirement (prevents accidentally using a postgresql:// URL here).
+    if (
+      data.DEPLOY_PROFILE === 'vps-next-mariadb' &&
+      data.MOCK_MODE !== 'true'
+    ) {
+      const requiredForVpsNextMariadb = [
+        'DATABASE_URL',
+        'NEXTAUTH_SECRET',
+        'NEXTAUTH_URL',
+      ] as const
+      for (const field of requiredForVpsNextMariadb) {
+        if (!data[field]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field} is required when DEPLOY_PROFILE=vps-next-mariadb and MOCK_MODE is not "true"`,
+            path: [field],
+          })
+        }
+      }
+      // DATABASE_URL shape check: must use mysql:// scheme for MariaDB.
+      if (
+        data.DATABASE_URL &&
+        !data.DATABASE_URL.startsWith('mysql://') &&
+        !data.DATABASE_URL.startsWith('mysql+srv://')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'DATABASE_URL must use the mysql:// scheme for vps-next-mariadb profile (e.g. mysql://user:pass@host:3307/db)',
+          path: ['DATABASE_URL'],
+        })
+      }
+      // SSO を含む LOGIN_STRATEGY (sso / both) では NextAuth Google provider の
+      // credentials が必須 (refinement 7 と同一ロジック)。
+      if (data.LOGIN_STRATEGY !== 'email-pass') {
+        const requiredForSso = ['AUTH_GOOGLE_ID', 'AUTH_GOOGLE_SECRET'] as const
+        for (const field of requiredForSso) {
+          if (!data[field]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${field} is required when DEPLOY_PROFILE=vps-next-mariadb, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
               path: [field],
             })
           }

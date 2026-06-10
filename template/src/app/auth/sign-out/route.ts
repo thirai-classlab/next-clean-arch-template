@@ -28,8 +28,12 @@
 //  env 存在チェック + try-catch で囲い、Supabase 不在/失敗でも必ず
 //  mock_session 失効 + redirect に到達させる。
 //
-// vps-next-postgres: when DEPLOY_PROFILE=vps-next-postgres, call NextAuth
-//  signOut({ redirect: false }) to invalidate the JWT session cookie.
+// vps-next-postgres / vps-next-mariadb: when DEPLOY_PROFILE is either NextAuth
+//  profile, call NextAuth signOut({ redirect: false }) to invalidate the JWT
+//  session cookie. Both profiles share the identical NextAuth v5 JWT session
+//  stack (only the database provider differs), so the teardown must fire for
+//  both — otherwise a signed-out user's JWT cookie stays valid until natural
+//  expiry (HIGH fix; mirrors middleware.ts / sign-in/page.tsx).
 //  The mock_session cookie clearing still runs (no-op if not set, safe).
 //  Supabase signOut is skipped when Supabase env vars are absent.
 
@@ -41,8 +45,15 @@ import { getValidatedEnv } from '@/lib/env'
 // MOCK_MODE session SSoT cookie 名 (sign-in.action.ts MOCK_SESSION_COOKIE と一致)。
 const MOCK_SESSION_COOKIE = 'mock_session'
 
+// Deploy profiles that use the NextAuth v5 JWT session stack — their session
+// cookie must be torn down via NextAuth signOut() on logout.
+const NEXTAUTH_PROFILES: ReadonlyArray<string> = [
+  'vps-next-postgres',
+  'vps-next-mariadb',
+]
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // ── vps-next-postgres: NextAuth session teardown ─────────────────────────
+  // ── vps-next-postgres / vps-next-mariadb: NextAuth session teardown ──────
   // NextAuth signOut() clears the JWT session cookie (__Secure-authjs.session-token
   // in production, authjs.session-token in dev). redirect: false so we control
   // the redirect ourselves below.
@@ -51,13 +62,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // sign-in/page.tsx) rather than raw process.env. getValidatedEnv() throws on
   // invalid env, but sign-out must stay graceful (the mock_session cleanup
   // below has to run no matter what), so fall back to the raw env on failure.
-  let isVpsNextPostgres: boolean
+  let isNextAuthProfile: boolean
   try {
-    isVpsNextPostgres = getValidatedEnv().DEPLOY_PROFILE === 'vps-next-postgres'
+    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
+      getValidatedEnv().DEPLOY_PROFILE,
+    )
   } catch {
-    isVpsNextPostgres = process.env.DEPLOY_PROFILE === 'vps-next-postgres'
+    isNextAuthProfile = NEXTAUTH_PROFILES.includes(
+      process.env.DEPLOY_PROFILE ?? '',
+    )
   }
-  if (isVpsNextPostgres) {
+  if (isNextAuthProfile) {
     try {
       const { signOut } = await import('@/auth')
       await signOut({ redirect: false })
