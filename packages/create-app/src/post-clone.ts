@@ -1,4 +1,4 @@
-import { readFile, writeFile, rm, access } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execa as defaultExeca } from 'execa';
 import type { PackageManager } from './prompt.js';
@@ -66,11 +66,20 @@ export async function writeEnvLocal(
 
   let content: string;
 
+  // Root 3 fix: vercel/pro pattern writes DEPLOY_PROFILE=minimal for local dev.
+  // env-schema refinement 4 forbids MOCK_MODE=true with pro/unlocked/vps
+  // (production-safety guard — do not change the guard).
+  // Local dev uses DEPLOY_PROFILE=minimal (mock-safe).
+  // Production: set DEPLOY_PROFILE=pro in the Vercel dashboard environment variables.
+  const needsRateLimit = loginStrategy !== 'sso';
   if (deployProfile === 'pro') {
     content = [
       'MOCK_MODE=true',
-      'DEPLOY_PROFILE=pro',
+      '# Local dev: DEPLOY_PROFILE=minimal is mock-safe (refinement 4 forbids MOCK_MODE=true with pro)',
+      '# Production: set DEPLOY_PROFILE=pro in your Vercel dashboard environment variables',
+      'DEPLOY_PROFILE=minimal',
       `LOGIN_STRATEGY=${loginStrategy}`,
+      ...(needsRateLimit ? ['RATE_LIMIT_ENABLED=true'] : []),
       domainLine.trimEnd(),
       '# Production keys (fill in before going live):',
       '# NEXT_PUBLIC_SUPABASE_URL=',
@@ -93,6 +102,7 @@ export async function writeEnvLocal(
       'MOCK_MODE=true',
       `DEPLOY_PROFILE=${deployProfile}`,
       `LOGIN_STRATEGY=${loginStrategy}`,
+      ...(needsRateLimit ? ['RATE_LIMIT_ENABLED=true'] : []),
       domainLine.trimEnd(),
       '# Production keys (fill in before deploying):',
       '# DATABASE_URL=postgresql://appuser:CHANGE_ME@localhost:5432/appdb',
@@ -113,6 +123,7 @@ export async function writeEnvLocal(
       'MOCK_MODE=true',
       `DEPLOY_PROFILE=${deployProfile}`,
       `LOGIN_STRATEGY=${loginStrategy}`,
+      ...(needsRateLimit ? ['RATE_LIMIT_ENABLED=true'] : []),
       domainLine.trimEnd(),
       '# Production keys (fill in before deploying):',
       '# DATABASE_URL=mysql://appuser:CHANGE_ME@localhost:3307/appdb',
@@ -251,6 +262,42 @@ export async function prunePatternFiles(
   }
 
   await Promise.all(removals.map(rmForce));
+
+  // Root 1 fix: select the correct prisma-client variant for the active profile.
+  //
+  // The template ships three variant files:
+  //   prisma-client.postgres.ts — imports only './prisma' (postgres-only, no webpackIgnore)
+  //   prisma-client.mariadb.ts  — imports only './prisma-mariadb' (mariadb-only, no webpackIgnore)
+  //   prisma-client.ts          — "both" variant with conditional branches and webpackIgnore tricks
+  //
+  // After pruning, we copy the correct variant over prisma-client.ts and remove the other
+  // variant files. This ensures webpack can statically trace the single import path in
+  // the resulting prisma-client.ts without encountering MODULE_NOT_FOUND for pruned files.
+  const infraDir = r('src/lib/infrastructure');
+  const prismaClientPath = join(infraDir, 'prisma-client.ts');
+  const postgresVariant = join(infraDir, 'prisma-client.postgres.ts');
+  const mariadbVariant = join(infraDir, 'prisma-client.mariadb.ts');
+
+  const isMariadbProfile =
+    deployProfile === 'vps-next-mariadb' || deployProfile === 'vps-nest-mariadb';
+  const hasPrisma = deployProfile !== 'pro';
+
+  if (hasPrisma) {
+    if (isMariadbProfile) {
+      // mariadb-only profile: use the mariadb variant
+      await copyFile(mariadbVariant, prismaClientPath);
+    } else {
+      // postgres-only profile (vps-next-postgres, vps-nest-postgres):
+      // use the postgres variant
+      await copyFile(postgresVariant, prismaClientPath);
+    }
+  }
+
+  // Always remove the variant sidecars — prisma-client.ts is now the canonical file.
+  // For vercel/pro, prisma-client.ts itself is also removed (prisma is fully pruned),
+  // but the variant sidecars must be removed regardless to avoid orphaned files.
+  await rmForce(postgresVariant);
+  await rmForce(mariadbVariant);
 }
 
 /**
