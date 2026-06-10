@@ -1,0 +1,74 @@
+Chakra UI v3 — Phase 2 Recipe Convention
+=========================================
+
+This directory documents the canonical recipe pattern established in Phase 2
+for all subsequent phases (3-5) to follow.
+
+PATTERN SUMMARY
+---------------
+
+1. Component base
+   Use the Chakra v3 component (Button, Input, etc.) as the rendering root.
+   Never fall back to a raw HTML element for styled interactive components.
+
+2. Variant mapping
+   Map our variant/size prop values to Chakra's built-in recipe variants.
+   Use a switch/VariantProps object literal, not className strings or cva().
+   Example: variant="ghost" → Chakra variant="plain" + bg/color token overrides.
+
+3. Token application
+   Use semantic token names from apps/web/src/theme/system.ts as Chakra style props.
+   Examples:
+     bg="accent.default"         (Linear blue — resolves to ~#2A6FDB in light mode)
+     color="fg.default"          (primary text)
+     borderColor="border.default" (subtle border)
+     bg="bg.sunken"              (input / card surface)
+   Never hardcode oklch() or hex values in component files.
+
+4. API preservation
+   Exported TypeScript interface must match the previous implementation exactly.
+   Internal implementation may change completely; the public contract must not.
+   This ensures zero changes needed in consuming pages, gallery, or domain components.
+
+5. "use client" placement
+   Add 'use client' at the top of any component that uses Chakra interactive
+   primitives (Button, Switch, Checkbox, etc.) — these use Ark UI internally
+   which relies on React context and browser events.
+   Read-only display components (Badge, Card) do not need "use client".
+
+6. a11y — preserved behaviours
+   - IconButton: aria-label is required (TypeScript-enforced via interface)
+   - Input/Textarea: label + error wired via Field.Root (aria-invalid, aria-describedby automatic)
+   - Checkbox: indeterminate → checked="indeterminate" → aria-checked="mixed" (Ark UI)
+   - Switch: role="switch" + aria-checked managed by SwitchRoot (Ark UI)
+   - RadioGroup: role="radio" per item, keyboard arrow-key navigation (Ark UI)
+   - Select: uses NativeSelect for options-array API → native browser a11y
+
+FILE LOCATIONS
+--------------
+  Primitives (Phase 2):
+    apps/web/src/components/ui/primitive/Button.tsx
+    apps/web/src/components/ui/primitive/IconButton.tsx
+    apps/web/src/components/ui/primitive/Input.tsx
+    apps/web/src/components/ui/primitive/Textarea.tsx
+    apps/web/src/components/ui/primitive/Select.tsx
+    apps/web/src/components/ui/primitive/Checkbox.tsx
+    apps/web/src/components/ui/primitive/Radio.tsx
+    apps/web/src/components/ui/primitive/Switch.tsx
+    apps/web/src/components/ui/Badge.tsx
+    apps/web/src/components/ui/Card.tsx
+
+  Token system:
+    apps/web/src/theme/system.ts       (createSystem config — SSoT)
+    apps/web/src/theme/provider.tsx    (ChakraProvider + next-themes wiring)
+
+PHASES 3-5 CHECKLIST
+---------------------
+For each new component migration, verify:
+  [ ] Chakra component used as base (not raw HTML)
+  [ ] variant/size mapped via switch literal with token props
+  [ ] semantic tokens used exclusively (no raw values)
+  [ ] exported TS interface unchanged from previous version
+  [ ] "use client" present if component uses hooks/events
+  [ ] aria-* attributes delegated to Chakra/Ark (not hand-rolled)
+  [ ] test rewritten to assert behavior + aria, not className strings
