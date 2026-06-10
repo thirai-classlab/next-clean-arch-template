@@ -1,0 +1,71 @@
+services:
+  db:
+    image: mariadb:11
+    environment:
+      MARIADB_USER: appuser
+      MARIADB_PASSWORD: apppass
+      MARIADB_DATABASE: appdb
+      MARIADB_ROOT_PASSWORD: rootpass
+    ports:
+      - "3307:3306"
+    volumes:
+      - mariadbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      NODE_ENV: production
+      DEPLOY_PROFILE: vps-nest-mariadb
+      DATABASE_URL: mysql://appuser:apppass@db:3306/appdb
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      LOGIN_STRATEGY: ${LOGIN_STRATEGY:-both}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NEST_API_URL: ${NEST_API_URL:-http://localhost:3001}
+    ports:
+      - "3001:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      DEPLOY_PROFILE: vps-nest-mariadb
+      MOCK_MODE: "false"
+      # env-schema refinement 1: RECALL_API_KEY is required whenever
+      # MOCK_MODE=false — without it the web container fails env validation
+      # at startup (HIGH fix). Set it in your .env file.
+      RECALL_API_KEY: ${RECALL_API_KEY}
+      NEST_API_URL: http://api:3001
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: mysql://appuser:apppass@db:3306/appdb
+      NEXTAUTH_SECRET: ${JWT_SECRET}
+      NEXTAUTH_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      LOGIN_STRATEGY: ${LOGIN_STRATEGY:-both}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mariadbdata:

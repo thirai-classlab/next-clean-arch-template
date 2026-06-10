@@ -25,6 +25,7 @@ import {
   updateSession,
 } from '@/lib/supabase/middleware'
 import { getNextAuthSessionRole } from '@/lib/supabase/middleware-vps'
+import { getNextNestSessionRole } from '@/lib/supabase/middleware-vps-nest'
 
 // task-5 Step 2: pending status の user を承認待ち page へ誘導する際、
 // redirect loop を避けるため判定を skip する path prefix。
@@ -88,16 +89,40 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   //     Supabase env 未設定時は updateSession 内で graceful skip されるため問題なし。
   //   - getSessionStatus() (Supabase pending check) は vps-next-postgres では null を返すため
   //     pending redirect は発火しない (= behavior-preserving)。
-  // Both vps-next-postgres and vps-next-mariadb use NextAuth v5 JWT strategy.
-  // The role is resolved from the NextAuth JWT cookie (Edge-safe, no Supabase).
+  // Three-way profile dispatch for role resolution:
+  //   1. vps-next-postgres / vps-next-mariadb : NextAuth v5 JWE cookie (getNextAuthSessionRole)
+  //   2. vps-nest-postgres  / vps-nest-mariadb : Nest HS256 JWT cookie (getNextNestSessionRole)
+  //   3. all other profiles                   : Supabase session → mock_session fallback
+  //
+  // All three paths fall back to mock_session cookie in non-production (MOCK_MODE / CI):
+  //   - Path 1: getNextAuthSessionRole returns null when NEXTAUTH_SECRET absent → mock_session.
+  //   - Path 2: getNextNestSessionRole returns null when JWT_SECRET absent → mock_session.
+  //   - Path 3: getSessionRole returns null (no Supabase env) → mock_session explicitly.
   const isVpsNextAuthProfile =
     process.env.DEPLOY_PROFILE === 'vps-next-postgres' ||
     process.env.DEPLOY_PROFILE === 'vps-next-mariadb'
 
+  const isVpsNestProfile =
+    process.env.DEPLOY_PROFILE === 'vps-nest-postgres' ||
+    process.env.DEPLOY_PROFILE === 'vps-nest-mariadb'
+
   let role: string | null
   if (isVpsNextAuthProfile) {
-    // vps-next-postgres / vps-next-mariadb: read role from NextAuth JWT cookie.
+    // vps-next-postgres / vps-next-mariadb: read role from NextAuth JWT cookie (JWE, HKDF).
     role = await getNextAuthSessionRole(request)
+    // MOCK_MODE fallback: when NEXTAUTH_SECRET is absent (CI / local dev), fall back to
+    // mock_session cookie so MOCK_MODE=true builds resolve correctly without NextAuth.
+    if (role === null && process.env.NODE_ENV !== 'production') {
+      role = request.cookies.get('mock_session')?.value ?? null
+    }
+  } else if (isVpsNestProfile) {
+    // vps-nest-postgres / vps-nest-mariadb: read role from Nest HS256 JWT cookie (jose).
+    role = await getNextNestSessionRole(request)
+    // MOCK_MODE fallback: when JWT_SECRET is absent (CI / local dev), fall back to
+    // mock_session cookie so MOCK_MODE=true builds resolve correctly without Nest.
+    if (role === null && process.env.NODE_ENV !== 'production') {
+      role = request.cookies.get('mock_session')?.value ?? null
+    }
   } else {
     // Supabase path (all other profiles): Supabase session takes priority,
     // then fall back to mock_session cookie for dev/MOCK_MODE.

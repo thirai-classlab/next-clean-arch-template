@@ -145,9 +145,9 @@ export const adminEnvSchema = z.object({
  */
 export const deploymentEnvSchema = z.object({
   DEPLOY_PROFILE: z
-    .enum(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'], {
+    .enum(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb', 'vps-nest-postgres', 'vps-nest-mariadb'], {
       errorMap: () => ({
-        message: 'Must be one of: minimal, unlocked, pro, vps, vps-next-postgres, vps-next-mariadb',
+        message: 'Must be one of: minimal, unlocked, pro, vps, vps-next-postgres, vps-next-mariadb, vps-nest-postgres, vps-nest-mariadb',
       }),
     })
     .default('minimal'),
@@ -230,6 +230,29 @@ export const postgresEnvSchema = z.object({
   SEED_PASSWORD: z.string().optional(),
 })
 
+// ── Nest API (optional, vps-nest-* profiles) ─────────────────────
+/**
+ * nestEnvSchema — Nest API auth vars for vps-nest-postgres / vps-nest-mariadb profiles.
+ *
+ * JWT_SECRET is shared between Nest (HS256 cookie signing) and the Next.js
+ * Edge middleware (jose jwtVerify). All fields optional at field level;
+ * conditional required enforcement is applied via superRefine (refinements 9+10).
+ *
+ * NEST_API_URL: private server-side URL (no NEXT_PUBLIC_ prefix) used by
+ * Next.js Server Actions and route handlers to call the Nest API.
+ */
+export const nestEnvSchema = z.object({
+  JWT_SECRET: emptyAsUndefined(
+    z
+      .string()
+      .min(32, { message: 'Must be at least 32 characters' })
+      .optional(),
+  ),
+  NEST_API_URL: emptyAsUndefined(
+    z.string().url({ message: 'Must be a valid URL' }).optional(),
+  ),
+})
+
 // ── Recall.ai (optional) ──────────────────────────────────────────
 export const recallEnvSchema = z.object({
   RECALL_API_KEY: z.string().optional(),
@@ -283,6 +306,7 @@ export const fullEnvSchema = supabaseEnvSchema
   .merge(recallEnvSchema)
   .merge(vercelEnvSchema)
   .merge(postgresEnvSchema)
+  .merge(nestEnvSchema)
   .superRefine((data, ctx) => {
     // refinement 1: MOCK_MODE=false 時は RECALL_API_KEY 必須
     if (data.MOCK_MODE === 'false' && !data.RECALL_API_KEY) {
@@ -316,6 +340,8 @@ export const fullEnvSchema = supabaseEnvSchema
     if (
       data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
       data.DEPLOY_PROFILE !== 'vps-next-mariadb' &&
+      data.DEPLOY_PROFILE !== 'vps-nest-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-nest-mariadb' &&
       data.LOGIN_STRATEGY !== 'email-pass' &&
       data.MOCK_MODE !== 'true'
     ) {
@@ -344,6 +370,9 @@ export const fullEnvSchema = supabaseEnvSchema
     // profilesForbiddingMock — MOCK_MODE=true is allowed for build-time verification;
     // runtime production guard is in src/instrumentation.ts.
     const profilesForbiddingMock: string[] = ['unlocked', 'pro', 'vps']
+    // vps-nest-* are intentionally excluded — same rationale as vps-next-*:
+    // MOCK_MODE=true is allowed for CI build verification; runtime production
+    // guard is in src/instrumentation.ts.
     if (profilesForbiddingMock.includes(data.DEPLOY_PROFILE) && data.MOCK_MODE === 'true') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -374,7 +403,9 @@ export const fullEnvSchema = supabaseEnvSchema
     if (
       data.MOCK_MODE !== 'true' &&
       data.DEPLOY_PROFILE !== 'vps-next-postgres' &&
-      data.DEPLOY_PROFILE !== 'vps-next-mariadb'
+      data.DEPLOY_PROFILE !== 'vps-next-mariadb' &&
+      data.DEPLOY_PROFILE !== 'vps-nest-postgres' &&
+      data.DEPLOY_PROFILE !== 'vps-nest-mariadb'
     ) {
       const requiredInRealMode = [
         'NEXT_PUBLIC_SUPABASE_URL',
@@ -492,6 +523,88 @@ export const fullEnvSchema = supabaseEnvSchema
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message: `${field} is required when DEPLOY_PROFILE=vps-next-mariadb, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
+              path: [field],
+            })
+          }
+        }
+      }
+    }
+    // refinement 9: vps-nest-postgres profile での必須 var チェック。
+    //
+    // Mirror of refinement 7/8 pattern but for the Nest-based auth stack.
+    // Nest owns auth (JWT_SECRET, NEST_API_URL) — no NEXTAUTH_* required.
+    // DATABASE_URL is shared with the vps-next-* path.
+    //
+    // 注意: refinement 4 は vps-nest-postgres + MOCK_MODE=true を意図的に許可
+    // (profilesForbiddingMock から除外、build-time / CI のビルド検証用)。
+    if (
+      data.DEPLOY_PROFILE === 'vps-nest-postgres' &&
+      data.MOCK_MODE !== 'true'
+    ) {
+      const requiredForVpsNestPostgres = ['JWT_SECRET', 'NEST_API_URL', 'DATABASE_URL'] as const
+      for (const field of requiredForVpsNestPostgres) {
+        if (!data[field]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field} is required when DEPLOY_PROFILE=vps-nest-postgres and MOCK_MODE is not "true"`,
+            path: [field],
+          })
+        }
+      }
+      // SSO を含む LOGIN_STRATEGY (sso / both) では Google OAuth credentials が必須。
+      if (data.LOGIN_STRATEGY !== 'email-pass') {
+        const requiredForSso = ['AUTH_GOOGLE_ID', 'AUTH_GOOGLE_SECRET'] as const
+        for (const field of requiredForSso) {
+          if (!data[field]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${field} is required when DEPLOY_PROFILE=vps-nest-postgres, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
+              path: [field],
+            })
+          }
+        }
+      }
+    }
+    // refinement 10: vps-nest-mariadb profile での必須 var チェック。
+    //
+    // Mirror of refinement 9 for the MariaDB variant. Identical auth stack
+    // (Nest JWT HS256), only the database provider differs.
+    // DATABASE_URL must use mysql:// scheme.
+    if (
+      data.DEPLOY_PROFILE === 'vps-nest-mariadb' &&
+      data.MOCK_MODE !== 'true'
+    ) {
+      const requiredForVpsNestMariadb = ['JWT_SECRET', 'NEST_API_URL', 'DATABASE_URL'] as const
+      for (const field of requiredForVpsNestMariadb) {
+        if (!data[field]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field} is required when DEPLOY_PROFILE=vps-nest-mariadb and MOCK_MODE is not "true"`,
+            path: [field],
+          })
+        }
+      }
+      // DATABASE_URL shape check: must use mysql:// scheme for MariaDB.
+      if (
+        data.DATABASE_URL &&
+        !data.DATABASE_URL.startsWith('mysql://') &&
+        !data.DATABASE_URL.startsWith('mysql+srv://')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'DATABASE_URL must use the mysql:// scheme for vps-nest-mariadb profile (e.g. mysql://user:pass@host:3307/db)',
+          path: ['DATABASE_URL'],
+        })
+      }
+      // SSO を含む LOGIN_STRATEGY (sso / both) では Google OAuth credentials が必須。
+      if (data.LOGIN_STRATEGY !== 'email-pass') {
+        const requiredForSso = ['AUTH_GOOGLE_ID', 'AUTH_GOOGLE_SECRET'] as const
+        for (const field of requiredForSso) {
+          if (!data[field]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${field} is required when DEPLOY_PROFILE=vps-nest-mariadb, LOGIN_STRATEGY includes SSO (sso/both) and MOCK_MODE is not "true"`,
               path: [field],
             })
           }

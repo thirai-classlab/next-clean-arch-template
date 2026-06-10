@@ -14,15 +14,15 @@ import {
 } from './mapping'
 
 describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
-  it('lists exactly 6 Deploy Profiles (4 original + vps-next-postgres + vps-next-mariadb)', () => {
-    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'])
+  it('lists exactly 8 Deploy Profiles (4 original + vps-next-postgres + vps-next-mariadb + vps-nest-postgres + vps-nest-mariadb)', () => {
+    expect(DEPLOY_PROFILES).toEqual(['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb', 'vps-nest-postgres', 'vps-nest-mariadb'])
   })
 
   it('lists exactly 16 Port names', () => {
     expect(PORT_NAMES).toHaveLength(16)
   })
 
-  it('declares an adapter for every (profile × port) combination = 96 entries', () => {
+  it('declares an adapter for every (profile × port) combination = 128 entries', () => {
     let count = 0
     for (const profile of DEPLOY_PROFILES) {
       for (const port of PORT_NAMES) {
@@ -32,7 +32,7 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
         count++
       }
     }
-    expect(count).toBe(96)
+    expect(count).toBe(128)
   })
 
   it('maps AuthPort to SupabaseAuthAdapter on the 4 original profiles', () => {
@@ -50,6 +50,14 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
     expect(PROFILE_ADAPTER_MAPPING['vps-next-mariadb'].AuthPort).toBe('NextAuthAdapter')
   })
 
+  it('maps AuthPort to NestAuthAdapter on vps-nest-postgres', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-postgres'].AuthPort).toBe('NestAuthAdapter')
+  })
+
+  it('maps AuthPort to NestAuthAdapter on vps-nest-mariadb', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-mariadb'].AuthPort).toBe('NestAuthAdapter')
+  })
+
   it('maps QueuePort to BullMQ on vps profiles and VercelQueue on Vercel profiles', () => {
     expect(PROFILE_ADAPTER_MAPPING.minimal.QueuePort).toBe('VercelQueueAdapter')
     expect(PROFILE_ADAPTER_MAPPING.unlocked.QueuePort).toBe('VercelQueueAdapter')
@@ -57,6 +65,8 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
     expect(PROFILE_ADAPTER_MAPPING.vps.QueuePort).toBe('RailwayBullMQAdapter')
     expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].QueuePort).toBe('RailwayBullMQAdapter')
     expect(PROFILE_ADAPTER_MAPPING['vps-next-mariadb'].QueuePort).toBe('RailwayBullMQAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-postgres'].QueuePort).toBe('RailwayBullMQAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-mariadb'].QueuePort).toBe('RailwayBullMQAdapter')
   })
 
   it('maps DbPort to PostgresDb on vps profiles and SupabaseDb on Vercel profiles', () => {
@@ -64,6 +74,8 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
     expect(PROFILE_ADAPTER_MAPPING.vps.DbPort).toBe('PostgresDbAdapter')
     expect(PROFILE_ADAPTER_MAPPING['vps-next-postgres'].DbPort).toBe('PostgresDbAdapter')
     expect(PROFILE_ADAPTER_MAPPING['vps-next-mariadb'].DbPort).toBe('PostgresDbAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-postgres'].DbPort).toBe('PostgresDbAdapter')
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-mariadb'].DbPort).toBe('PostgresDbAdapter')
   })
 
   it('maps RateLimiterPort to InMemoryRateLimiterAdapter on vps-next-postgres', () => {
@@ -74,6 +86,18 @@ describe('PROFILE_ADAPTER_MAPPING (draft 06 §3.2)', () => {
 
   it('maps RateLimiterPort to InMemoryRateLimiterAdapter on vps-next-mariadb', () => {
     expect(PROFILE_ADAPTER_MAPPING['vps-next-mariadb'].RateLimiterPort).toBe(
+      'InMemoryRateLimiterAdapter',
+    )
+  })
+
+  it('maps RateLimiterPort to InMemoryRateLimiterAdapter on vps-nest-postgres', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-postgres'].RateLimiterPort).toBe(
+      'InMemoryRateLimiterAdapter',
+    )
+  })
+
+  it('maps RateLimiterPort to InMemoryRateLimiterAdapter on vps-nest-mariadb', () => {
+    expect(PROFILE_ADAPTER_MAPPING['vps-nest-mariadb'].RateLimiterPort).toBe(
       'InMemoryRateLimiterAdapter',
     )
   })
