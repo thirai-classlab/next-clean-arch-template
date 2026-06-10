@@ -42,15 +42,28 @@ npx @takuma-hirai/create-app my-app
 プロンプトに従って以下を指定してください:
 
 - **Project name**: `my-app` (または任意の名前)
+- **Deploy target**: `Vercel (recommended)` / `VPS (self-hosted)`
+- **Backend architecture**: `Next.js only` / `Next.js + NestJS API` (VPS 構成でのみ有効)
+- **Database**: `PostgreSQL` / `MariaDB / MySQL` (VPS 構成でのみ有効)
+- **Auth providers**: `Google SSO` / `Email + Password` (複数選択可)
+- **Email domain restriction**: サインイン許可ドメイン (空 = 制限なし)
 - **Package manager**: `pnpm` (推奨)
-- **Git initialization**: `yes` (推奨)
-- **Profile**: `vercel-supabase` (推奨)
+- **Install dependencies / Git initialization**: `yes` (推奨)
 
-プロンプトなしで自動化する場合は、以下を利用できます:
+プロンプトなしで自動化する場合 (CI / 非対話環境) は、flag で全選択を指定できます:
 
 ```bash
-npx @takuma-hirai/create-app my-app --pm pnpm --no-install --no-git --profile vercel-supabase
+# Vercel + Supabase (default 構成)
+npx @takuma-hirai/create-app my-app --target vercel
+
+# VPS: Next.js 単体 + PostgreSQL (非対話時は --backend / --db が必須)
+npx @takuma-hirai/create-app my-app --target vps --backend next-only --db postgres \
+  --auth google email-pw --auth-domain example.com --pm pnpm --no-install --no-git
 ```
+
+> 非対話 (non-TTY) モードでは `name` (positional) が必須、`--target vps` の場合は `--backend` と `--db` も必須です。不足していると CLI は不足 flag 名を列挙して即座に失敗します (fail-fast)。
+> 旧 `--profile` flag は後方互換のためにのみ残されています — 新規利用では `--target` / `--backend` / `--db` / `--auth` を使用してください (対応表は [Deployment Patterns](#deploy_profile-environment-profiles) 参照)。
+> template の取得元は `CREATE_APP_TEMPLATE_SOURCE` env (`github:owner/repo/subdir#ref` 形式) で上書きできます (fork / branch 検証用)。
 
 ### Step 2: Install Dependencies
 
@@ -258,7 +271,7 @@ pnpm build
 
 | Feature | Details |
 |---|---|
-| 5 デプロイパターン | Vercel+Supabase / VPS (Next+Postgres / Next+MariaDB / Nest+Postgres / Nest+MariaDB) — 詳細は [Deployment Patterns](#deploy_profile-environment-profiles) |
+| 5 デプロイパターン | FE は全パターン Next.js。① Vercel: Next.js+Supabase / ②-⑤ VPS: BE が Next.js 単体 (Postgres or MariaDB) または **Next.js+NestJS** (Postgres or MariaDB、auth は NestJS 所有) — 詳細は [Deployment Patterns](#deploy_profile-environment-profiles) |
 | 認証の選択 (env 駆動) | `LOGIN_STRATEGY` (Google SSO / email+password / both) + `AUTH_ALLOWED_EMAIL_DOMAIN` (ドメイン制限 hook) を全パターンで切替可 |
 | Vercel + Supabase (default) | Vercel deploy + Supabase Auth/Postgres/RLS |
 | VPS 構成 | docker-compose 同梱 (NextAuth v5 + Prisma、または NestJS 所有 auth + Passport JWT) |
@@ -405,13 +418,21 @@ pnpm db:migrate:mariadb && pnpm db:seed:mariadb
 
 > Postgres / MariaDB の 2 schema は `pnpm check:schema-drift` で drift を機械検出します。nest 系は `api/` ディレクトリが独立 package (NestJS 10) で、`api/.env` に Nest 側 env を設定します。
 
-The CLI scaffolding command `--profile` flag corresponds to these runtime profiles as follows:
-- `--profile vercel-managed` → `DEPLOY_PROFILE=minimal`
-- `--profile vercel-supabase` → `DEPLOY_PROFILE=pro`
-- `--profile vps` → `DEPLOY_PROFILE=vps` (legacy)
-- `--profile air-gap` → `DEPLOY_PROFILE=minimal` (offline only)
+#### CLI flags → DEPLOY_PROFILE 対応表
 
-> **Note**: CLI の backend (next-only / next-nest)・DB (postgres / mariadb)・認証 (Google / email+pw / domain) のインストール時選択 prompt は次期 CLI release で追加予定です。それまでは scaffold 後に `DEPLOY_PROFILE` と認証 env を `.env.local` で直接指定してください。
+CLI のインストール時選択 (prompt または flag) は scaffold 時に `DEPLOY_PROFILE` へ解決されます:
+
+| CLI flags | DEPLOY_PROFILE |
+|---|---|
+| `--target vercel` | `pro` (※ `.env.local` はローカル開発用に `minimal` を書き込み、本番は Vercel dashboard で `pro` を設定) |
+| `--target vps --backend next-only --db postgres` | `vps-next-postgres` |
+| `--target vps --backend next-only --db mariadb` | `vps-next-mariadb` |
+| `--target vps --backend next-nest --db postgres` | `vps-nest-postgres` |
+| `--target vps --backend next-nest --db mariadb` | `vps-nest-mariadb` |
+
+認証の選択も同時に env へ書き込まれます: `--auth google email-pw` (複数指定可) → `LOGIN_STRATEGY` (`sso` / `email-pass` / `both`)、`--auth-domain example.com` → `AUTH_ALLOWED_EMAIL_DOMAIN`。
+
+> **Legacy**: 旧 `--profile` flag は後方互換のためにのみ残されています。`vercel-supabase` / `vercel-managed` / `vercel` → `--target vercel` 相当、`vps` → `--target vps --backend next-only --db postgres` 相当に内部変換されます。新規利用では `--target` / `--backend` / `--db` / `--auth` / `--auth-domain` を使用してください。
 
 ### Boundary Enforcement
 
