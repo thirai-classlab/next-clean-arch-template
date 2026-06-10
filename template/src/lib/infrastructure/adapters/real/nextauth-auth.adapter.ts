@@ -151,6 +151,16 @@ export class NextAuthAdapter implements AuthPort {
    *
    * Note: NextAuth v5 uses JWE (A256CBC-HS512 encrypted tokens), not plain HS256.
    * The getToken() function from next-auth/jwt handles both encryption and signing.
+   *
+   * HIGH fix (salt): NextAuth v5 derives the JWE encryption key via HKDF with
+   * the session cookie name as the salt. getToken() defaults salt = cookieName,
+   * but when the token arrives via the Authorization header the cookie name is
+   * not part of the request — if the salt does not match the cookie name used
+   * at issuance ('__Secure-authjs.session-token' in production / https,
+   * 'authjs.session-token' otherwise), HKDF derives a different key and every
+   * legitimate token decrypts to null. Derive secureCookie the same way
+   * middleware-vps.ts does (NEXTAUTH_URL scheme, NODE_ENV fallback) and pass
+   * the matching salt explicitly.
    */
   async verifyToken(
     token: string,
@@ -170,9 +180,21 @@ export class NextAuthAdapter implements AuthPort {
         headers: new Headers({ authorization: `Bearer ${token}` }),
       }
 
+      // Match the salt to the cookie name the token was issued under
+      // (HKDF salt = cookie name in NextAuth v5). Same derivation as
+      // getNextAuthSessionRole() in middleware-vps.ts.
+      const secureCookie =
+        process.env.NEXTAUTH_URL?.startsWith('https://') ??
+        process.env.NODE_ENV === 'production'
+      const salt = secureCookie
+        ? '__Secure-authjs.session-token'
+        : 'authjs.session-token'
+
       const decoded = await getToken({
         req: fakeReq as Parameters<typeof getToken>[0]['req'],
         secret,
+        secureCookie,
+        salt,
       })
 
       if (!decoded) {

@@ -44,6 +44,17 @@ if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoVie
   window.HTMLElement.prototype.scrollIntoView = function () {}
 }
 
+// scrollTo polyfill for jsdom — jsdom does not implement Element.scrollTo;
+// scroll-spy / carousel components call it in effects (@zag-js/carousel via
+// Chakra v3 Carousel in GalleryClient calls el.scrollTo asynchronously, which
+// vitest reports as an unhandled error)
+if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = function () {} as unknown as typeof Element.prototype.scrollTo
+}
+if (typeof window !== 'undefined' && !window.scrollTo) {
+  window.scrollTo = function () {} as unknown as typeof window.scrollTo
+}
+
 // matchMedia mock for jsdom
 if (typeof window !== 'undefined' && !window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {

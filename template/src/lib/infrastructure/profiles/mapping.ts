@@ -7,7 +7,7 @@
 // exactly. container.ts uses these strings as property keys on the dynamic
 // import result (mod[className]). A mismatch silently skips registration.
 
-export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb'] as const
+export const DEPLOY_PROFILES = ['minimal', 'unlocked', 'pro', 'vps', 'vps-next-postgres', 'vps-next-mariadb', 'vps-nest-postgres', 'vps-nest-mariadb'] as const
 export type DeployProfile = (typeof DEPLOY_PROFILES)[number]
 
 export const PORT_NAMES = [
@@ -169,6 +169,51 @@ export const PROFILE_ADAPTER_MAPPING: Readonly<
   // RateLimiterPort: InMemoryRateLimiterAdapter (same as vps-next-postgres).
   'vps-next-mariadb': Object.freeze({
     AuthPort: 'NextAuthAdapter',
+    DbPort: 'PostgresDbAdapter',
+    RealtimePort: 'LivekitWebSocketAdapter',
+    StoragePort: 'S3CompatibleStorageAdapter',
+    QueuePort: 'RailwayBullMQAdapter',
+    EmailPort: 'SmtpEmailAdapter',
+    BotOrchestratorPort: 'RecallAiBotAdapter',
+    TranscriptionPort: 'RecallAiTranscriptionAdapter',
+    CalendarPort: 'GoogleAndMsGraphCalendarAdapter',
+    LocalInferencePort: 'OllamaInferenceAdapter',
+    VideoProcessorPort: 'FfmpegSelfHostedAdapter',
+    ContinuousMonitoringPort: 'PrometheusGrafanaAdapter',
+    MediaServerPort: 'LivekitSelfHostedMediaAdapter',
+    WebhookVerifierPort: 'RecallAiVerifierAdapter',
+    InternalRpcPort: 'HttpRpcAdapter',
+    RateLimiterPort: 'InMemoryRateLimiterAdapter',
+  }),
+  // vps-nest-postgres: Self-hosted VPS with PostgreSQL + NestJS auth (no Supabase, no NextAuth).
+  // AuthPort: NestAuthAdapter — thin pass-through that delegates auth calls to Nest REST API.
+  // DbPort: PostgresDbAdapter (same as vps-next-postgres — direct Postgres via Prisma).
+  // All non-auth ports mirror the vps-next-postgres profile.
+  // RateLimiterPort: InMemoryRateLimiterAdapter (single-instance; Upstash upgrade path available).
+  'vps-nest-postgres': Object.freeze({
+    AuthPort: 'NestAuthAdapter',
+    DbPort: 'PostgresDbAdapter',
+    RealtimePort: 'LivekitWebSocketAdapter',
+    StoragePort: 'S3CompatibleStorageAdapter',
+    QueuePort: 'RailwayBullMQAdapter',
+    EmailPort: 'SmtpEmailAdapter',
+    BotOrchestratorPort: 'RecallAiBotAdapter',
+    TranscriptionPort: 'RecallAiTranscriptionAdapter',
+    CalendarPort: 'GoogleAndMsGraphCalendarAdapter',
+    LocalInferencePort: 'OllamaInferenceAdapter',
+    VideoProcessorPort: 'FfmpegSelfHostedAdapter',
+    ContinuousMonitoringPort: 'PrometheusGrafanaAdapter',
+    MediaServerPort: 'LivekitSelfHostedMediaAdapter',
+    WebhookVerifierPort: 'RecallAiVerifierAdapter',
+    InternalRpcPort: 'HttpRpcAdapter',
+    RateLimiterPort: 'InMemoryRateLimiterAdapter',
+  }),
+  // vps-nest-mariadb: Self-hosted VPS with MariaDB 11 + NestJS auth (no Supabase, no NextAuth).
+  // Identical auth stack to vps-nest-postgres (Nest JWT HS256), only database provider differs.
+  // DbPort: PostgresDbAdapter — naming artifact; Prisma abstracts the provider.
+  // DATABASE_URL uses mysql:// scheme; getProfilePrismaClient() selects the mysql-generated client.
+  'vps-nest-mariadb': Object.freeze({
+    AuthPort: 'NestAuthAdapter',
     DbPort: 'PostgresDbAdapter',
     RealtimePort: 'LivekitWebSocketAdapter',
     StoragePort: 'S3CompatibleStorageAdapter',

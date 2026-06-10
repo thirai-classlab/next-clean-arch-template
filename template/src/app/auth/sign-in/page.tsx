@@ -40,6 +40,8 @@ export default async function SignInPage({
   const isMock = env.MOCK_MODE === 'true'
   const isVpsNextPostgres =
     env.DEPLOY_PROFILE === 'vps-next-postgres' || env.DEPLOY_PROFILE === 'vps-next-mariadb'
+  const isVpsNestProfile =
+    env.DEPLOY_PROFILE === 'vps-nest-postgres' || env.DEPLOY_PROFILE === 'vps-nest-mariadb'
   const showsPasswordForm = loginMethods !== 'sso'
   const showSeedHint = isMock && showsPasswordForm
 
@@ -58,6 +60,10 @@ export default async function SignInPage({
     const vpsActions = await import('@/lib/interfaces/actions/sign-in-vps.action')
     googleAction = vpsActions.signInWithGoogleVpsAction
     passwordAction = vpsActions.signInWithPasswordVpsAction
+  } else if (isVpsNestProfile) {
+    const nestActions = await import('@/lib/interfaces/actions/sign-in-vps-nest.action')
+    googleAction = nestActions.signInWithGoogleNestAction
+    passwordAction = nestActions.signInWithPasswordNestAction
   }
 
   // Resolve error from query params (e.g., AccessDenied from NextAuth domain check).
