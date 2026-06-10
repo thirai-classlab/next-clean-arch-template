@@ -23,13 +23,19 @@
 -- RLS policy 本体 + index の一部は 005_rls_policies.sql で集約。本 file は table + index + ENABLE。
 -- 本 migration は committable scaffold (実 apply は Supabase env 整備後)。
 
+-- 冪等性 (P5-R2 HIGH): 再 apply / 手動適用で duplicate-object error にならないよう
+--   IF NOT EXISTS / DO ブロック guard を全 DDL に付ける (002 と同方針)。
+
 -- allowed_users の pattern 種別 (draft 08 §3.2)。
-CREATE TYPE allowed_pattern_type AS ENUM ('email', 'domain');
+DO $$ BEGIN
+  CREATE TYPE allowed_pattern_type AS ENUM ('email', 'domain');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ============================================================================
 -- public.allowed_users: admin allow list (非 classlab domain の自動 active 化登録)
 -- ============================================================================
-CREATE TABLE public.allowed_users (
+CREATE TABLE IF NOT EXISTS public.allowed_users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   pattern_type allowed_pattern_type NOT NULL,
   -- C-01: 格納値は必ず正規化済 (LOWER + TRIM)。006 の v_email / v_domain と一致させる。
@@ -42,14 +48,14 @@ CREATE TABLE public.allowed_users (
 );
 
 -- 006 の EXISTS サブクエリ (pattern_type + pattern_value 一致) を高速化。
-CREATE INDEX idx_allowed_users_lookup ON public.allowed_users(pattern_type, pattern_value);
+CREATE INDEX IF NOT EXISTS idx_allowed_users_lookup ON public.allowed_users(pattern_type, pattern_value);
 
 ALTER TABLE public.allowed_users ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
 -- public.bots: Recall.ai bot lifecycle (draft 08 §3.4)
 -- ============================================================================
-CREATE TABLE public.bots (
+CREATE TABLE IF NOT EXISTS public.bots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   recall_bot_id text UNIQUE,            -- Recall.ai 側 bot ID
@@ -62,15 +68,15 @@ CREATE TABLE public.bots (
   left_at timestamptz
 );
 
-CREATE INDEX idx_bots_owner ON public.bots(owner_id);
-CREATE INDEX idx_bots_status ON public.bots(status);
+CREATE INDEX IF NOT EXISTS idx_bots_owner ON public.bots(owner_id);
+CREATE INDEX IF NOT EXISTS idx_bots_status ON public.bots(status);
 
 ALTER TABLE public.bots ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
 -- public.recordings: bot の録画 (draft 08 §3.5)
 -- ============================================================================
-CREATE TABLE public.recordings (
+CREATE TABLE IF NOT EXISTS public.recordings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   bot_id uuid NOT NULL REFERENCES public.bots(id) ON DELETE CASCADE,
   recording_url text,
@@ -81,14 +87,14 @@ CREATE TABLE public.recordings (
   completed_at timestamptz
 );
 
-CREATE INDEX idx_recordings_bot ON public.recordings(bot_id);
+CREATE INDEX IF NOT EXISTS idx_recordings_bot ON public.recordings(bot_id);
 
 ALTER TABLE public.recordings ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
 -- public.transcripts: 録画の文字起こし (draft 08 §3.6)
 -- ============================================================================
-CREATE TABLE public.transcripts (
+CREATE TABLE IF NOT EXISTS public.transcripts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   recording_id uuid NOT NULL REFERENCES public.recordings(id) ON DELETE CASCADE,
   language text NOT NULL DEFAULT 'ja',
@@ -97,14 +103,14 @@ CREATE TABLE public.transcripts (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_transcripts_recording ON public.transcripts(recording_id);
+CREATE INDEX IF NOT EXISTS idx_transcripts_recording ON public.transcripts(recording_id);
 
 ALTER TABLE public.transcripts ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
 -- public.calendar_events: Recall calendar 連携 (draft 08 §3.7)
 -- ============================================================================
-CREATE TABLE public.calendar_events (
+CREATE TABLE IF NOT EXISTS public.calendar_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   recall_event_id text UNIQUE,
@@ -116,15 +122,15 @@ CREATE TABLE public.calendar_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_calendar_events_user ON public.calendar_events(user_id);
-CREATE INDEX idx_calendar_events_start ON public.calendar_events(start_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_user ON public.calendar_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON public.calendar_events(start_time);
 
 ALTER TABLE public.calendar_events ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
 -- public.webhook_events: Recall.ai webhook idempotency (draft 08 §3.8)
 -- ============================================================================
-CREATE TABLE public.webhook_events (
+CREATE TABLE IF NOT EXISTS public.webhook_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   event_type text NOT NULL,             -- 例: 'bot.status_change'
   payload jsonb NOT NULL,
@@ -134,7 +140,7 @@ CREATE TABLE public.webhook_events (
   error text
 );
 
-CREATE INDEX idx_webhook_events_type ON public.webhook_events(event_type);
-CREATE INDEX idx_webhook_events_received ON public.webhook_events(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON public.webhook_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON public.webhook_events(received_at DESC);
 
 ALTER TABLE public.webhook_events ENABLE ROW LEVEL SECURITY;

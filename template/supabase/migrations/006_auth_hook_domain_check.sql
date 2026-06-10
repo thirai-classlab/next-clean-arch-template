@@ -22,6 +22,20 @@
 --   public.users / public.audit_log へ INSERT する。WITH CHECK(false) policy 下でも
 --   SECURITY DEFINER 経由なら INSERT 可能 (draft 08 C-02 設計)。
 -- SET search_path = public: search_path injection 防止 (SECURITY DEFINER の鉄則)。
+--
+-- ⚠ FAILURE MODE — この trigger は **FAIL-CLOSED** (P5-R4 HIGH):
+--   AFTER INSERT trigger 内の未処理例外は GoTrue の auth.users INSERT transaction ごと
+--   ROLLBACK され、signup 自体が失敗する。将来の migration で public.users / public.audit_log
+--   の schema が変わり本 function と不整合になった場合、**全ての新規 signup が静かに拒否される**
+--   (operator に届く error surface は GoTrue の 500 のみ)。
+--   - security > availability の意図的選択: 不整合状態で「黙って全員 active で通す」より
+--     「signup を止めて気付かせる」を採る。
+--   - availability を優先したい deployment は、branch (1) 以外の INSERT を
+--     `EXCEPTION WHEN OTHERS THEN ... log_audit_event(...)` で包んで fail-open 化すること。
+--   - 本 failure mode は pgTAP (supabase/tests/domain_check_hook.test.sql の
+--     fail-closed case) で「schema 破壊時に signup INSERT が例外で落ちる」ことを検証している。
+--   - 運用 debug 手順: psql で `INSERT INTO auth.users (id, email) VALUES (gen_random_uuid(), 'probe@example.com');`
+--     を打ち、エラー全文 (どの table / column で落ちたか) を確認 → 直近 migration を疑う。
 
 CREATE OR REPLACE FUNCTION public.signup_check_classlab_domain()
 RETURNS trigger
@@ -90,7 +104,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.signup_check_classlab_domain() IS
-  'task-5 Step 2: AFTER INSERT ON auth.users trigger function. classlab.co.jp 自動 active / allow_list 一致 active / 他 pending を判定し public.users projection + audit_log を作成する。';
+  'task-5 Step 2: AFTER INSERT ON auth.users trigger function. classlab.co.jp 自動 active / allow_list 一致 active / 他 pending を判定し public.users projection + audit_log を作成する。FAIL-CLOSED: 未処理例外は signup transaction ごと ROLLBACK し全新規 signup を拒否する (file header の FAILURE MODE 注記参照)。NOTE: 010_domain_hook_config.sql が本 function を config-row 駆動の実装で CREATE OR REPLACE する (本 file の hardcode 版は migration 履歴互換のため残置)。';
 
 -- AFTER INSERT trigger: auth.users への row 追加 (Google OAuth サインアップ) 完了後に発火。
 -- FOR EACH ROW: 1 user ごとに 1 回実行。

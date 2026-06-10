@@ -24,6 +24,14 @@
 -- 依存: 002 (users + enum) / 003 (allowed_users / bots / recordings / transcripts / calendar_events / webhook_events) /
 --       004 (audit_log)。全 table の ENABLE ROW LEVEL SECURITY は各 table の migration 側で実施済。
 -- 本 migration は committable scaffold (実 apply は Supabase env 整備後、pgTAP 実行も同様に deferred)。
+--
+-- 冪等性 (P5-R2 HIGH): CREATE POLICY には IF NOT EXISTS が無い (PG15/Supabase 時点) ため、
+--   各 policy は DROP POLICY IF EXISTS → CREATE POLICY の組で定義し、再 apply / 手動適用を安全化する。
+--
+-- performance (P5-R3 HIGH): policy 式内の helper 呼び出しは bare call (`public.is_admin()`) ではなく
+--   `(SELECT public.is_admin())` の initplan wrapper で書く。bare call は候補 row ごとに再評価され得るが、
+--   subquery wrapper は planner が statement ごとに 1 回だけ評価する (Supabase RLS performance ガイドの
+--   推奨 pattern)。bots / audit_log 等の大 table への admin read-all で特に効く。
 
 -- ============================================================================
 -- helper functions
@@ -54,23 +62,27 @@ $$;
 -- public.users (4 policy) — draft 08 §3.1
 -- ============================================================================
 -- 1: 本人 row のみ SELECT 可
+DROP POLICY IF EXISTS users_select_own ON public.users;
 CREATE POLICY users_select_own ON public.users
   FOR SELECT TO authenticated
   USING (id = auth.uid());
 
 -- 2: admin は全 user SELECT 可
+DROP POLICY IF EXISTS users_select_admin ON public.users;
 CREATE POLICY users_select_admin ON public.users
   FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- 3: admin のみ UPDATE 可 (role / status 変更)
+DROP POLICY IF EXISTS users_update_admin ON public.users;
 CREATE POLICY users_update_admin ON public.users
   FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- 4: 直接 INSERT は全拒否 (C-02、anon / authenticated 両方明示)。
 --    実際の INSERT は signup_check_classlab_domain() (SECURITY DEFINER、006) のみが RLS バイパスで実施。
+DROP POLICY IF EXISTS users_insert_system ON public.users;
 CREATE POLICY users_insert_system ON public.users
   FOR INSERT TO anon, authenticated
   WITH CHECK (false);
@@ -78,29 +90,35 @@ CREATE POLICY users_insert_system ON public.users
 -- ============================================================================
 -- public.allowed_users (4 policy) — draft 08 §3.2 (H-03 で update_admin 追加)
 -- ============================================================================
+DROP POLICY IF EXISTS allowed_users_select_admin ON public.allowed_users;
 CREATE POLICY allowed_users_select_admin ON public.allowed_users
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
+DROP POLICY IF EXISTS allowed_users_insert_admin ON public.allowed_users;
 CREATE POLICY allowed_users_insert_admin ON public.allowed_users
-  FOR INSERT TO authenticated WITH CHECK (public.is_admin());
+  FOR INSERT TO authenticated WITH CHECK ((SELECT public.is_admin()));
 
 -- H-03: UPDATE policy (元設計の DELETE+INSERT は race condition リスクのため UPDATE を直接許可)
+DROP POLICY IF EXISTS allowed_users_update_admin ON public.allowed_users;
 CREATE POLICY allowed_users_update_admin ON public.allowed_users
   FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
+DROP POLICY IF EXISTS allowed_users_delete_admin ON public.allowed_users;
 CREATE POLICY allowed_users_delete_admin ON public.allowed_users
-  FOR DELETE TO authenticated USING (public.is_admin());
+  FOR DELETE TO authenticated USING ((SELECT public.is_admin()));
 
 -- ============================================================================
 -- public.audit_log (2 policy) — draft 08 §3.3
 -- ============================================================================
 -- admin のみ SELECT 可
+DROP POLICY IF EXISTS audit_log_select_admin ON public.audit_log;
 CREATE POLICY audit_log_select_admin ON public.audit_log
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
 -- 直接 INSERT は全拒否 (C-02)。実際の INSERT は log_audit_event() (SECURITY DEFINER、004) 経由のみ。
+DROP POLICY IF EXISTS audit_log_insert_system ON public.audit_log;
 CREATE POLICY audit_log_insert_system ON public.audit_log
   FOR INSERT TO anon, authenticated
   WITH CHECK (false);
@@ -109,30 +127,36 @@ CREATE POLICY audit_log_insert_system ON public.audit_log
 -- public.bots (5 policy) — draft 08 §3.4
 -- ============================================================================
 -- owner は自分の bot を SELECT 可
+DROP POLICY IF EXISTS bots_select_owner ON public.bots;
 CREATE POLICY bots_select_owner ON public.bots
   FOR SELECT TO authenticated USING (owner_id = auth.uid());
 
 -- H-02: INSERT は member 以上のみ (viewer の bot 作成禁止)。owner_id は自分自身。
+DROP POLICY IF EXISTS bots_insert_owner ON public.bots;
 CREATE POLICY bots_insert_owner ON public.bots
   FOR INSERT TO authenticated
-  WITH CHECK (owner_id = auth.uid() AND public.is_member_or_above());
+  WITH CHECK (owner_id = auth.uid() AND (SELECT public.is_member_or_above()));
 
+DROP POLICY IF EXISTS bots_update_owner ON public.bots;
 CREATE POLICY bots_update_owner ON public.bots
   FOR UPDATE TO authenticated
   USING (owner_id = auth.uid())
   WITH CHECK (owner_id = auth.uid());
 
+DROP POLICY IF EXISTS bots_delete_owner ON public.bots;
 CREATE POLICY bots_delete_owner ON public.bots
   FOR DELETE TO authenticated USING (owner_id = auth.uid());
 
 -- admin は全 bot SELECT 可 (override)
+DROP POLICY IF EXISTS bots_select_admin ON public.bots;
 CREATE POLICY bots_select_admin ON public.bots
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
 -- ============================================================================
 -- public.recordings (3 policy) — draft 08 §3.5
 -- ============================================================================
 -- bot owner は SELECT 可
+DROP POLICY IF EXISTS recordings_select_owner ON public.recordings;
 CREATE POLICY recordings_select_owner ON public.recordings
   FOR SELECT TO authenticated
   USING (EXISTS (
@@ -140,18 +164,21 @@ CREATE POLICY recordings_select_owner ON public.recordings
   ));
 
 -- 直接 INSERT は全拒否 (C-02 / H-05)。実 INSERT は webhook handler の service_role client (RLS バイパス)。
+DROP POLICY IF EXISTS recordings_insert_system ON public.recordings;
 CREATE POLICY recordings_insert_system ON public.recordings
   FOR INSERT TO anon, authenticated
   WITH CHECK (false);
 
 -- admin は全 SELECT 可
+DROP POLICY IF EXISTS recordings_select_admin ON public.recordings;
 CREATE POLICY recordings_select_admin ON public.recordings
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
 -- ============================================================================
 -- public.transcripts (3 policy) — draft 08 §3.6
 -- ============================================================================
 -- recording → bot owner 経由で SELECT 可
+DROP POLICY IF EXISTS transcripts_select_owner ON public.transcripts;
 CREATE POLICY transcripts_select_owner ON public.transcripts
   FOR SELECT TO authenticated
   USING (EXISTS (
@@ -160,35 +187,41 @@ CREATE POLICY transcripts_select_owner ON public.transcripts
   ));
 
 -- 直接 INSERT は全拒否 (C-02 / H-05)。実 INSERT は webhook handler の service_role client (RLS バイパス)。
+DROP POLICY IF EXISTS transcripts_insert_system ON public.transcripts;
 CREATE POLICY transcripts_insert_system ON public.transcripts
   FOR INSERT TO anon, authenticated
   WITH CHECK (false);
 
 -- admin は全 SELECT 可
+DROP POLICY IF EXISTS transcripts_select_admin ON public.transcripts;
 CREATE POLICY transcripts_select_admin ON public.transcripts
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
 -- ============================================================================
 -- public.calendar_events (2 policy) — draft 08 §3.7
 -- ============================================================================
 -- owner は自分の calendar_event を全操作可 (CRUD)
+DROP POLICY IF EXISTS calendar_events_all_owner ON public.calendar_events;
 CREATE POLICY calendar_events_all_owner ON public.calendar_events
   FOR ALL TO authenticated
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
 -- admin は全 SELECT 可
+DROP POLICY IF EXISTS calendar_events_select_admin ON public.calendar_events;
 CREATE POLICY calendar_events_select_admin ON public.calendar_events
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
 
 -- ============================================================================
 -- public.webhook_events (2 policy) — draft 08 §3.8
 -- ============================================================================
 -- 直接 INSERT は全拒否 (C-02 / H-05)。実 INSERT は webhook handler の service_role client (RLS バイパス)。
+DROP POLICY IF EXISTS webhook_events_insert_system ON public.webhook_events;
 CREATE POLICY webhook_events_insert_system ON public.webhook_events
   FOR INSERT TO anon, authenticated
   WITH CHECK (false);
 
 -- admin は全 SELECT 可
+DROP POLICY IF EXISTS webhook_events_select_admin ON public.webhook_events;
 CREATE POLICY webhook_events_select_admin ON public.webhook_events
-  FOR SELECT TO authenticated USING (public.is_admin());
+  FOR SELECT TO authenticated USING ((SELECT public.is_admin()));
