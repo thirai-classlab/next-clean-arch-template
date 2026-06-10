@@ -108,6 +108,7 @@ const ADAPTER_MODULE_MAP: Readonly<Record<string, string>> = Object.freeze({
   UpstashRateLimiterAdapter: './adapters/real/upstash-rate-limiter.adapter',
   // ── Real adapters (Wave 5-I and later — files may not exist yet) ──────
   NextAuthAdapter: './adapters/real/nextauth-auth.adapter',
+  NestAuthAdapter: './adapters/real/nest-auth.adapter',
   SupabaseAuthAdapter: './adapters/real/supabase-auth.adapter',
   SupabaseDbAdapter: './adapters/real/supabase-db.adapter',
   SupabaseRealtimeAdapter: './adapters/real/supabase-realtime.adapter',
@@ -366,7 +367,12 @@ async function doBootstrap(): Promise<void> {
   // UserRepository token. This is only loaded when the profile explicitly requests
   // Prisma-backed storage. The literal import path is used so webpack can trace
   // the module into the bundle.
-  if (profile === 'vps-next-postgres' || profile === 'vps-next-mariadb') {
+  if (
+    profile === 'vps-next-postgres' ||
+    profile === 'vps-next-mariadb' ||
+    profile === 'vps-nest-postgres' ||
+    profile === 'vps-nest-mariadb'
+  ) {
     await registerPrismaRepositories(profile)
   }
 }

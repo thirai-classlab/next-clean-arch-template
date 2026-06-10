@@ -66,3 +66,23 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm --filter next-clean-arch-template check:schema-drift
       - run: pnpm --filter next-clean-arch-template test
+
+  # NestJS API (template/api) — vps-nest-* profiles (HIGH fix).
+  # template/api is a standalone npm package (NOT in the pnpm workspace), so
+  # its Jest suites (auth.service / auth.controller / roles.guard unit tests +
+  # e2e/auth.e2e-spec.ts) were never executed by the jobs above. This job
+  # builds + tests it independently. postinstall generates both Prisma clients.
+  nest-api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: template/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:e2e
