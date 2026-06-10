@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { cloneTemplate, TEMPLATE_SOURCE } from '../src/clone.js';
+import {
+  cloneTemplate,
+  resolveTemplateSource,
+  TEMPLATE_SOURCE,
+} from '../src/clone.js';
 
 /**
  * H-01 2 経路責務分離: clone.ts は経路 B (template fetch) のみ実装。
@@ -88,6 +92,56 @@ describe('cloneTemplate: giget 成功', () => {
       TEMPLATE_SOURCE,
       expect.objectContaining({ auth: 'pat_b_token' }),
     );
+  });
+});
+
+describe('cloneTemplate: CREATE_APP_TEMPLATE_SOURCE override', () => {
+  beforeEach(() => {
+    delete process.env.GIGET_AUTH;
+    delete process.env.CREATE_APP_TEMPLATE_SOURCE;
+  });
+  afterEach(() => {
+    delete process.env.CREATE_APP_TEMPLATE_SOURCE;
+  });
+
+  it('resolveTemplateSource は未設定時 default、設定時 override を返す', () => {
+    expect(resolveTemplateSource()).toBe(TEMPLATE_SOURCE);
+    process.env.CREATE_APP_TEMPLATE_SOURCE =
+      'github:my-fork/next-clean-arch-template/template#feat-branch';
+    expect(resolveTemplateSource()).toBe(
+      'github:my-fork/next-clean-arch-template/template#feat-branch',
+    );
+    // 空文字は「未設定」扱い (default に戻す)
+    process.env.CREATE_APP_TEMPLATE_SOURCE = '';
+    expect(resolveTemplateSource()).toBe(TEMPLATE_SOURCE);
+  });
+
+  it('override 設定時は downloadTemplate に override source を渡す', async () => {
+    const deps = makeDeps();
+    process.env.CREATE_APP_TEMPLATE_SOURCE =
+      'github:my-fork/next-clean-arch-template/template#feat-branch';
+    deps.downloadTemplate.mockResolvedValue({ dir: '/tmp/my-app' });
+
+    await cloneTemplate('/tmp/my-app', deps);
+
+    expect(deps.downloadTemplate).toHaveBeenCalledWith(
+      'github:my-fork/next-clean-arch-template/template#feat-branch',
+      expect.objectContaining({ dir: '/tmp/my-app' }),
+    );
+    expect(deps.execa).not.toHaveBeenCalled();
+  });
+
+  it('override 設定時に giget 失敗 -> default repo への git clone fallback はせず CreateAppError', async () => {
+    const deps = makeDeps();
+    process.env.CREATE_APP_TEMPLATE_SOURCE =
+      'github:my-fork/next-clean-arch-template/template#feat-branch';
+    deps.downloadTemplate.mockRejectedValue(new Error('404 Not Found'));
+
+    await expect(cloneTemplate('/tmp/my-app', deps)).rejects.toThrow(
+      /CREATE_APP_TEMPLATE_SOURCE/,
+    );
+    // fallback git clone は呼ばれない (override 元と異なる source から黙って取得しない)
+    expect(deps.execa).not.toHaveBeenCalled();
   });
 });
 

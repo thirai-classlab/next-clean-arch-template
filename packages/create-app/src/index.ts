@@ -72,7 +72,11 @@ async function run(projectName: string | undefined, opts: RawOptions): Promise<v
     git: opts.git,
   });
 
-  // Non-TTY fast-fail: validate required flags before attempting prompts.
+  // Non-TTY: fast-fail when required flags are missing, otherwise use the
+  // resolved config (flags + defaults) directly — never call prompts without
+  // a TTY (closed stdin would leave the prompt stream unresolved and the
+  // process would silently exit 0 without scaffolding).
+  let answers: Awaited<ReturnType<typeof runPrompts>>;
   if (!isTTY) {
     const validation = resolveConfig(rawFlags, false);
     if ('missing' in validation) {
@@ -84,10 +88,11 @@ async function run(projectName: string | undefined, opts: RawOptions): Promise<v
         ExitCode.NETWORK, // exit 1
       );
     }
+    answers = validation.config;
+  } else {
+    // Run interactive prompts (skips any field already set in rawFlags)
+    answers = await runPrompts(rawFlags);
   }
-
-  // Run interactive prompts (skips any field already set in rawFlags)
-  const answers = await runPrompts(rawFlags);
   const targetDir = resolve(process.cwd(), answers.projectName);
 
   if ((await dirExists(targetDir)) && !opts.force) {

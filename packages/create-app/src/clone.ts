@@ -22,9 +22,20 @@ import { CreateAppError, ExitCode } from './errors.js';
  *   full clone → `template/` の中身を target dir に移し替えて完結する。
  */
 
-/** giget が subdir を解釈するための template source 文字列 */
+/** giget が subdir を解釈するための default template source 文字列 */
 export const TEMPLATE_SOURCE =
   'github:thirai-classlab/next-clean-arch-template/template';
+
+/**
+ * 実際に使用する template source を解決する。
+ * `CREATE_APP_TEMPLATE_SOURCE` env で上書き可能 — fork / branch / E2E 検証で
+ * `github:owner/repo/subdir#ref` 形式の任意 source を指定できる。
+ * 未設定時は default の TEMPLATE_SOURCE を返す。
+ */
+export function resolveTemplateSource(): string {
+  const override = process.env.CREATE_APP_TEMPLATE_SOURCE;
+  return override !== undefined && override !== '' ? override : TEMPLATE_SOURCE;
+}
 
 /** git clone fallback で使う完全な repo URL (subdir 指定なし) */
 const TEMPLATE_GIT_URL =
@@ -52,8 +63,11 @@ export async function cloneTemplate(
   targetDir: string,
   deps: CloneDeps = defaultDeps,
 ): Promise<void> {
+  const source = resolveTemplateSource();
+  const isOverridden = source !== TEMPLATE_SOURCE;
+
   try {
-    await deps.downloadTemplate(TEMPLATE_SOURCE, {
+    await deps.downloadTemplate(source, {
       dir: targetDir,
       force: false,
       // PAT_B (giget 専用)。npm registry auth PAT_A とは別 token。
@@ -62,6 +76,15 @@ export async function cloneTemplate(
     return;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    // CREATE_APP_TEMPLATE_SOURCE 上書き時は default repo への git clone fallback を
+    // しない (上書き元と異なる source から黙って取得すると検証が無意味になる)。
+    if (isOverridden) {
+      throw new CreateAppError(
+        `CREATE_APP_TEMPLATE_SOURCE (${source}) からの template 取得に失敗しました: ${msg}`,
+        ExitCode.MISSING_TEMPLATE,
+      );
+    }
 
     // 404 + GIGET_AUTH 未設定 = private repo 認証漏れの可能性を案内
     if (/Not Found|404/.test(msg) && !process.env.GIGET_AUTH) {
