@@ -20,42 +20,36 @@
 // Edge runtime constraint: MUST NOT be imported from middleware / Edge code
 // (Prisma Client uses Node.js native modules).
 
-import type { PrismaClient } from '@prisma/client'
-
-/**
- * Model delegate surface shared by both providers. The postgres-generated
- * delegates additionally expose `createManyAndReturn` / `updateManyAndReturn`
- * (Postgres `RETURNING` — not supported by MySQL/MariaDB), so those are
- * excluded from the cross-profile contract.
- */
-type SharedModelDelegate<D> = Omit<
-  D,
-  'createManyAndReturn' | 'updateManyAndReturn'
->
-
 /**
  * Shared compile-time contract for profile-agnostic Prisma consumers
- * (PrismaUserRepository, NextAuthAdapter, src/auth.ts): the model delegates
- * plus connection lifecycle, typed from the postgres-generated client (the
- * canonical schema surface).
+ * (PrismaUserRepository, NextAuthAdapter, src/auth.ts).
+ *
+ * This type is defined WITHOUT importing from '@prisma/client' so that
+ * profiles that do not generate the postgres schema (vercel/pro, which prunes
+ * the entire prisma/ directory) can still compile this file cleanly. The type
+ * is structural: any generated Prisma client that satisfies this shape can be
+ * used at runtime, including the mariadb-provider client.
  *
  * Provider-specific surfaces ($transaction isolation-level options,
- * RETURNING-based delegate methods, etc.) legitimately differ between the
- * postgresql and mysql generated clients and are deliberately EXCLUDED —
- * code shared across both profiles must not use them.
+ * RETURNING-based delegate methods `createManyAndReturn` /
+ * `updateManyAndReturn`, etc.) legitimately differ between the postgresql and
+ * mysql generated clients and are deliberately EXCLUDED — code shared across
+ * both profiles must not use them.
  *
- * Compile-time drift guarding: full structural assignability between the two
- * generated clients is impossible by design (provider FILTER types differ,
- * e.g. StringFilter.mode / QueryMode is postgres-only and appears in every
- * nested where-input). The model ROW types ARE provider-independent, and
- * their mutual assignability is enforced as a compile error in
- * prisma-mariadb.ts; the full schema text is enforced by
+ * Compile-time drift guarding between the two generated clients (postgres vs
+ * mariadb) is performed in prisma-mariadb.ts via mutual-assignability checks
+ * on the model ROW types; the full schema text is enforced by
  * `pnpm check:schema-drift` (CI gate).
  */
-export type ProfilePrismaClient = Pick<PrismaClient, '$connect' | '$disconnect'> & {
-  user: SharedModelDelegate<PrismaClient['user']>
-  account: SharedModelDelegate<PrismaClient['account']>
-  auditLog: SharedModelDelegate<PrismaClient['auditLog']>
+export type ProfilePrismaClient = {
+  $connect(): Promise<void>
+  $disconnect(): Promise<void>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  user: { findUnique: (...args: any[]) => any; upsert: (...args: any[]) => any; create: (...args: any[]) => any; update: (...args: any[]) => any; delete: (...args: any[]) => any; findMany: (...args: any[]) => any }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  account: { create: (...args: any[]) => any; findFirst: (...args: any[]) => any; delete: (...args: any[]) => any; deleteMany: (...args: any[]) => any }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  auditLog: { create: (...args: any[]) => any; findMany: (...args: any[]) => any; count: (...args: any[]) => any }
 }
 
 /**
@@ -68,8 +62,23 @@ export async function getProfilePrismaClient(
   profile?: string,
 ): Promise<ProfilePrismaClient> {
   const active = profile ?? process.env.DEPLOY_PROFILE
-  if (active === 'vps-next-mariadb') {
-    const { prismaMariadb } = await import('./prisma-mariadb')
+  if (active === 'vps-next-mariadb' || active === 'vps-nest-mariadb') {
+    // webpackIgnore: true tells webpack NOT to statically trace and bundle this
+    // module path. For non-mariadb profiles the CLI post-clone step prunes
+    // prisma-mariadb.ts, so webpack must not attempt to resolve it at build time
+    // (MODULE_NOT_FOUND). The import is safe at runtime because this branch is
+    // only reached when DEPLOY_PROFILE is a mariadb variant, i.e. the file
+    // is always present when this code actually executes.
+    //
+    // The path is cast `as string` to prevent TypeScript from statically
+    // resolving the module path at type-check time. Without this cast,
+    // `tsc --noEmit` (run by `next build`) would fail with TS2307
+    // "Cannot find module './prisma-mariadb'" on profiles where the file was
+    // pruned by the CLI post-clone step. `as string` makes the specifier
+    // opaque to the TypeScript checker (it sees `import(string)` → `any`),
+    // which is correct: the import is intentionally conditional.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const mod = await import(/* webpackIgnore: true */ './prisma-mariadb' as string)
     // SAFETY: the mariadb-generated client cannot be ASSIGNED to the
     // postgres-typed contract because provider-specific filter surfaces
     // differ by design (StringFilter.mode / QueryMode is postgres-only and
@@ -79,8 +88,20 @@ export async function getProfilePrismaClient(
     // add/remove/rename/type change — and (2) `pnpm check:schema-drift`
     // (CI gate over the full schema text). Shared code must stay within the
     // ProfilePrismaClient surface (provider-only members are excluded above).
-    return prismaMariadb as unknown as ProfilePrismaClient
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    return (mod as { prismaMariadb: unknown }).prismaMariadb as unknown as ProfilePrismaClient
   }
-  const { prisma } = await import('./prisma')
-  return prisma
+  // The path is cast `as string` to prevent TypeScript from statically resolving
+  // prisma.ts and type-checking its `import { PrismaClient } from '@prisma/client'`
+  // statement on profiles where the entire prisma/ directory was pruned by the CLI
+  // post-clone step (vercel/pro). The `as string` cast makes the specifier opaque to
+  // the TypeScript checker (import(string) → any), identical to the mariadb branch
+  // above. Webpack statically traces the literal './prisma' path into the bundle on
+  // profiles where prisma.ts exists (vps-next-postgres, vps-nest-postgres) — that is
+  // safe because prisma/ is present on those profiles. On vercel/pro, the CLI prunes
+  // prisma.ts so this branch is never reached at runtime (DEPLOY_PROFILE !== 'pro'
+  // would be a container.ts misconfiguration, not a normal code path).
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { prisma } = await import('./prisma' as string)
+  return prisma as unknown as ProfilePrismaClient
 }

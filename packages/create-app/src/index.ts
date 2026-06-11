@@ -5,16 +5,28 @@ import { Command } from 'commander';
 import { red } from 'kleur/colors';
 import { cloneTemplate } from './clone.js';
 import { runPrompts } from './prompt.js';
-import type { CliArgs, PackageManager, Profile } from './prompt.js';
+import type { PackageManager } from './prompt.js';
 import { postClone } from './post-clone.js';
+import {
+  resolveConfig,
+  resolveDeployProfile,
+  resolveLoginStrategy,
+} from './config-resolver.js';
+import type { FlagArgs } from './config-resolver.js';
 import { CreateAppError, ExitCode, classifyError } from './errors.js';
 
 interface RawOptions {
-  pm: PackageManager;
-  profile: Profile;
+  pm?: PackageManager;
+  target?: 'vercel' | 'vps';
+  backend?: 'next-only' | 'next-nest';
+  db?: 'postgres' | 'mariadb';
+  auth?: ('google' | 'email-pw')[];
+  authDomain?: string;
   install: boolean;
   git: boolean;
   force: boolean;
+  // Legacy --profile flag (mapped to target/backend/db)
+  profile?: string;
 }
 
 async function dirExists(path: string): Promise<boolean> {
@@ -26,14 +38,61 @@ async function dirExists(path: string): Promise<boolean> {
   }
 }
 
-async function run(projectName: string | undefined, opts: RawOptions): Promise<void> {
-  const argv: CliArgs = {
-    projectName,
-    pm: opts.pm,
-    profile: opts.profile,
-  };
+/**
+ * Map legacy --profile value to FlagArgs fields.
+ * New callers use --target / --backend / --db directly.
+ */
+function applyLegacyProfile(
+  profile: string | undefined,
+  flags: FlagArgs,
+): FlagArgs {
+  if (!profile) return flags;
+  if (profile === 'vercel-supabase' || profile === 'vercel-managed' || profile === 'vercel') {
+    return { ...flags, target: 'vercel' };
+  }
+  if (profile === 'vps') {
+    return { ...flags, target: 'vps', backend: flags.backend ?? 'next-only', db: flags.db ?? 'postgres' };
+  }
+  // unknown profile — ignore, let prompts handle it
+  return flags;
+}
 
-  const answers = await runPrompts(argv);
+async function run(projectName: string | undefined, opts: RawOptions): Promise<void> {
+  const isTTY = process.stdin.isTTY ?? false;
+
+  const rawFlags: FlagArgs = applyLegacyProfile(opts.profile, {
+    projectName,
+    target: opts.target,
+    backend: opts.backend,
+    db: opts.db,
+    auth: opts.auth,
+    authDomain: opts.authDomain,
+    pm: opts.pm,
+    install: opts.install,
+    git: opts.git,
+  });
+
+  // Non-TTY: fast-fail when required flags are missing, otherwise use the
+  // resolved config (flags + defaults) directly — never call prompts without
+  // a TTY (closed stdin would leave the prompt stream unresolved and the
+  // process would silently exit 0 without scaffolding).
+  let answers: Awaited<ReturnType<typeof runPrompts>>;
+  if (!isTTY) {
+    const validation = resolveConfig(rawFlags, false);
+    if ('missing' in validation) {
+      const flagList = validation.missing.join(', ');
+      throw new CreateAppError(
+        `Non-TTY mode requires explicit flags. Missing: ${flagList}\n` +
+          `  name: positional argument (e.g. npx @takuma-hirai/create-app my-app)\n` +
+          `  --target vps requires: --backend <next-only|next-nest> --db <postgres|mariadb>`,
+        ExitCode.NETWORK, // exit 1
+      );
+    }
+    answers = validation.config;
+  } else {
+    // Run interactive prompts (skips any field already set in rawFlags)
+    answers = await runPrompts(rawFlags);
+  }
   const targetDir = resolve(process.cwd(), answers.projectName);
 
   if ((await dirExists(targetDir)) && !opts.force) {
@@ -43,12 +102,17 @@ async function run(projectName: string | undefined, opts: RawOptions): Promise<v
     );
   }
 
+  const deployProfile = resolveDeployProfile(answers.target, answers.backend, answers.db);
+  const loginStrategy = resolveLoginStrategy(answers.auth);
+
   await cloneTemplate(targetDir);
   await postClone({
     targetDir,
     projectName: answers.projectName,
     pm: answers.pm,
-    profile: answers.profile,
+    deployProfile,
+    loginStrategy,
+    authDomain: answers.authDomain,
     install: opts.install && answers.install,
     git: opts.git && answers.git,
   });
@@ -61,10 +125,15 @@ const program = new Command();
 program
   .name('create-classlab-app')
   .description('ClassLab Next.js Clean Architecture template scaffolder')
-  .version('0.1.0')
+  .version('0.1.1')
   .argument('[project-name]', 'Target directory name')
-  .option('--pm <manager>', 'Package manager (pnpm/npm/yarn)', 'pnpm')
-  .option('--profile <profile>', 'Deploy profile', 'vercel-supabase')
+  .option('--pm <manager>', 'Package manager (pnpm/npm/yarn)')
+  .option('--target <target>', 'Deploy target: vercel | vps')
+  .option('--backend <backend>', 'Backend architecture: next-only | next-nest (VPS only)')
+  .option('--db <db>', 'Database: postgres | mariadb (VPS only)')
+  .option('--auth <providers...>', 'Auth providers: google, email-pw')
+  .option('--auth-domain <domain>', 'Restrict to email domain (blank = no restriction)')
+  .option('--profile <profile>', 'Legacy deploy profile (use --target instead)')
   .option('--no-install', 'Skip dependency install')
   .option('--no-git', 'Skip git init')
   .option('--force', 'Overwrite existing directory', false)

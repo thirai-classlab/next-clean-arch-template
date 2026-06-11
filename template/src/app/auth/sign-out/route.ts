@@ -98,7 +98,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const isNestProfile = NEST_PROFILES.includes(deployProfile)
   if (isNextAuthProfile) {
     try {
-      const { signOut } = await import('@/auth')
+      // Dual guard: webpackIgnore: true prevents webpack from tracing '@/auth' into
+      // the vercel/pro bundle (CLI prunes src/auth.ts for Supabase-based Vercel deploys).
+      // 'as string' makes the specifier opaque to the TypeScript checker so `next build`
+      // type-check does not fail with TS2307 on profiles where src/auth.ts was pruned.
+      // Safe at runtime: this branch is only reached for NEXTAUTH_PROFILES
+      // (vps-next-postgres / vps-next-mariadb), where src/auth.ts always exists.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const authMod = await import(/* webpackIgnore: true */ '@/auth' as string)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const { signOut } = authMod as { signOut: (opts: { redirect: boolean }) => Promise<void> }
       await signOut({ redirect: false })
     } catch {
       // NextAuth signOut failure — continue to cookie cleanup + redirect.

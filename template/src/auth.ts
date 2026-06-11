@@ -13,7 +13,6 @@ import Google from 'next-auth/providers/google'
 import Credentials from 'next-auth/providers/credentials'
 import { PrismaAdapter } from '@auth/prisma-adapter'
 import bcrypt from 'bcryptjs'
-import type { PrismaClient } from '@prisma/client'
 import { type Role } from '@/lib/domain/value-objects/role'
 import { getProfilePrismaClient } from '@/lib/infrastructure/prisma-client'
 
@@ -59,7 +58,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // `pnpm check:schema-drift` in CI. The mariadb-generated client lacks the
   // postgres-only `createManyAndReturn` / `updateManyAndReturn` delegate
   // methods (RETURNING is unsupported on MySQL/MariaDB), hence the assertion.
-  adapter: PrismaAdapter(prisma as PrismaClient),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adapter: PrismaAdapter(prisma as any),
 
   // JWT session strategy: no Session table written to DB.
   // All session state lives in a signed/encrypted HttpOnly cookie.

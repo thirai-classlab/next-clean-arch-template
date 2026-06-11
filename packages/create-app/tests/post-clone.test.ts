@@ -14,8 +14,12 @@ async function scaffoldFakeTemplate(dir: string) {
   );
   await writeFile(join(dir, '.env.example'), 'NEXT_PUBLIC_FOO=bar\n');
   await writeFile(join(dir, 'Dockerfile'), 'FROM node:20\n');
-  await writeFile(join(dir, 'docker-compose.yml'), 'services: {}\n');
   await writeFile(join(dir, 'vercel.json'), '{}\n');
+  // Variant files needed by Root 1 fix
+  await mkdir(join(dir, 'src/lib/infrastructure'), { recursive: true });
+  await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.ts'), 'export {};\n');
+  await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.postgres.ts'), 'export {};\n');
+  await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.mariadb.ts'), 'export {};\n');
 }
 
 function makeExeca() {
@@ -38,7 +42,9 @@ describe('postClone: scaffold 後処理', () => {
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'pro',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: false,
       execa,
@@ -48,20 +54,24 @@ describe('postClone: scaffold 後処理', () => {
     expect(pkg.name).toBe('my-fresh-app');
   });
 
-  it('.env.example を .env.local に copy する', async () => {
+  it('.env.local を MOCK_MODE=true で作成する (pro profile)', async () => {
     const execa = makeExeca();
     await postClone({
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'pro',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: false,
       execa,
     });
 
     const envLocal = await readFile(join(workDir, '.env.local'), 'utf8');
-    expect(envLocal).toContain('NEXT_PUBLIC_FOO=bar');
+    expect(envLocal).toContain('MOCK_MODE=true');
+    // Root 3 fix: pro pattern writes minimal, not pro (local dev is mock-safe)
+    expect(envLocal).toContain('DEPLOY_PROFILE=minimal');
   });
 
   it('git: true 時は git init + add + commit を execa で実行する', async () => {
@@ -70,7 +80,9 @@ describe('postClone: scaffold 後処理', () => {
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'vps-next-postgres',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: true,
       execa,
@@ -89,7 +101,9 @@ describe('postClone: scaffold 後処理', () => {
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'pro',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: false,
       execa,
@@ -103,7 +117,9 @@ describe('postClone: scaffold 後処理', () => {
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'vps-next-postgres',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: true,
       git: false,
       execa,
@@ -119,7 +135,9 @@ describe('postClone: scaffold 後処理', () => {
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'pro',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: false,
       execa,
@@ -127,36 +145,85 @@ describe('postClone: scaffold 後処理', () => {
     expect(execa.mock.calls.filter((c) => c[0] === 'pnpm')).toHaveLength(0);
   });
 
-  it('vercel profile 選択時は Dockerfile / docker-compose.yml を削除する', async () => {
+  it('pro profile: variant sidecar files are removed after pruning', async () => {
     const execa = makeExeca();
     await postClone({
       targetDir: workDir,
       projectName: 'my-fresh-app',
       pm: 'pnpm',
-      profile: 'vercel-supabase',
+      deployProfile: 'pro',
+      loginStrategy: 'sso',
+      authDomain: '',
       install: false,
       git: false,
       execa,
     });
-    await expect(stat(join(workDir, 'Dockerfile'))).rejects.toThrow();
-    await expect(stat(join(workDir, 'docker-compose.yml'))).rejects.toThrow();
-    // vercel.json は残る
-    await expect(stat(join(workDir, 'vercel.json'))).resolves.toBeDefined();
+    // Both variant sidecar files must be removed
+    await expect(stat(join(workDir, 'src/lib/infrastructure/prisma-client.postgres.ts'))).rejects.toThrow();
+    await expect(stat(join(workDir, 'src/lib/infrastructure/prisma-client.mariadb.ts'))).rejects.toThrow();
   });
 
-  it('vps profile 選択時は vercel.json を削除する', async () => {
-    const execa = makeExeca();
-    await postClone({
-      targetDir: workDir,
-      projectName: 'my-fresh-app',
-      pm: 'pnpm',
-      profile: 'vps',
-      install: false,
-      git: false,
-      execa,
-    });
-    await expect(stat(join(workDir, 'vercel.json'))).rejects.toThrow();
-    // Dockerfile は残る
-    await expect(stat(join(workDir, 'Dockerfile'))).resolves.toBeDefined();
+  it('vps-next-postgres profile: postgres variant copied to prisma-client.ts, mariadb variant removed', async () => {
+    // Scaffold a dir with variant content for identification
+    const dir = await mkdtemp(join(tmpdir(), 'create-app-variant-'));
+    try {
+      await scaffoldFakeTemplate(dir);
+      // Write distinguishable content to identify which variant was chosen
+      await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.postgres.ts'), 'export const VARIANT="postgres";\n');
+      await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.mariadb.ts'), 'export const VARIANT="mariadb";\n');
+
+      const execa = makeExeca();
+      await postClone({
+        targetDir: dir,
+        projectName: 'test-app',
+        pm: 'pnpm',
+        deployProfile: 'vps-next-postgres',
+        loginStrategy: 'sso',
+        authDomain: '',
+        install: false,
+        git: false,
+        execa,
+      });
+
+      // prisma-client.ts should now contain postgres variant content
+      const clientContent = await readFile(join(dir, 'src/lib/infrastructure/prisma-client.ts'), 'utf8');
+      expect(clientContent).toContain('VARIANT="postgres"');
+
+      // Sidecar variant files should be removed
+      await expect(stat(join(dir, 'src/lib/infrastructure/prisma-client.postgres.ts'))).rejects.toThrow();
+      await expect(stat(join(dir, 'src/lib/infrastructure/prisma-client.mariadb.ts'))).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('vps-next-mariadb profile: mariadb variant copied to prisma-client.ts, postgres variant removed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'create-app-variant-'));
+    try {
+      await scaffoldFakeTemplate(dir);
+      await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.postgres.ts'), 'export const VARIANT="postgres";\n');
+      await writeFile(join(dir, 'src/lib/infrastructure/prisma-client.mariadb.ts'), 'export const VARIANT="mariadb";\n');
+
+      const execa = makeExeca();
+      await postClone({
+        targetDir: dir,
+        projectName: 'test-app',
+        pm: 'pnpm',
+        deployProfile: 'vps-next-mariadb',
+        loginStrategy: 'sso',
+        authDomain: '',
+        install: false,
+        git: false,
+        execa,
+      });
+
+      const clientContent = await readFile(join(dir, 'src/lib/infrastructure/prisma-client.ts'), 'utf8');
+      expect(clientContent).toContain('VARIANT="mariadb"');
+
+      await expect(stat(join(dir, 'src/lib/infrastructure/prisma-client.postgres.ts'))).rejects.toThrow();
+      await expect(stat(join(dir, 'src/lib/infrastructure/prisma-client.mariadb.ts'))).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
