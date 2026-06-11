@@ -364,32 +364,28 @@ export const fullEnvSchema = supabaseEnvSchema
     }
     // refinement 4 (task #37, H-3): 非 minimal profile での MOCK_MODE=true を禁止。
     // 本番相当の profile で MOCK 認証 bypass が有効化される事故を防ぐ。
-    // 例外: vps-next-postgres / vps-next-mariadb / vps-nest-postgres / vps-nest-mariadb / pro は
-    // mock adapter (DB / Supabase 不要) でビルド検証するため許可する
-    // (runtime の本番流入は src/instrumentation.ts が拒否)。
-    // pro (Vercel/Supabase profile) is also excluded from profilesForbiddingMock
-    // so that scaffolded projects can run `pnpm build` / `pnpm dev` with
-    // MOCK_MODE=true without needing real Supabase credentials. Runtime production
-    // guard is enforced by src/instrumentation.ts (NODE_ENV=production + MOCK_MODE=true → crash).
-    const profilesForbiddingMock: string[] = ['unlocked', 'vps']
-    // vps-next-* / vps-nest-* / pro are intentionally excluded — MOCK_MODE=true is
-    // allowed for CI build verification; runtime production guard is in src/instrumentation.ts.
+    // 例外: vps-next-postgres / vps-next-mariadb は mock adapter (DB 不要) で
+    // ビルド検証するため許可する (runtime の本番流入は src/instrumentation.ts が拒否)。
+    // vps-next-postgres and vps-next-mariadb are intentionally excluded from
+    // profilesForbiddingMock — MOCK_MODE=true is allowed for build-time verification;
+    // runtime production guard is in src/instrumentation.ts.
+    const profilesForbiddingMock: string[] = ['unlocked', 'pro', 'vps']
+    // vps-nest-* are intentionally excluded — same rationale as vps-next-*:
+    // MOCK_MODE=true is allowed for CI build verification; runtime production
+    // guard is in src/instrumentation.ts.
     if (profilesForbiddingMock.includes(data.DEPLOY_PROFILE) && data.MOCK_MODE === 'true') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'MOCK_MODE=true is not allowed with DEPLOY_PROFILE=unlocked or vps (auth bypass guard)',
+          'MOCK_MODE=true is only allowed with DEPLOY_PROFILE=minimal, vps-next-postgres, or vps-next-mariadb (auth bypass guard)',
         path: ['MOCK_MODE'],
       })
     }
     // refinement 5 (task #37, security H-R3-1): email-pass / both は brute-force 対象。
     // RATE_LIMIT_ENABLED=true を起動時に強制し、無防備な有効化を機械ブロックする。
-    // 例外: MOCK_MODE=true の場合は mock adapter を使用するため rate-limit 不要
-    // (fresh checkout / CI ビルド検証が MOCK_MODE=true で通過できるようにする)。
     if (
       data.LOGIN_STRATEGY !== 'sso' &&
-      data.RATE_LIMIT_ENABLED !== 'true' &&
-      data.MOCK_MODE !== 'true'
+      data.RATE_LIMIT_ENABLED !== 'true'
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
