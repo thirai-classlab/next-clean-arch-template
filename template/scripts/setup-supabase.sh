@@ -14,6 +14,13 @@
 # - M-02: bash 4+ requirement
 # - NEW-H-01: safe_dotenv_load (no source/eval)
 # - NEW-M-02: BSD sort -V fallback
+# - P5-R5: non-interactive (CI / piped stdin) では confirm() が auto-accept するため、
+#   SUPABASE_RESET=true は SUPABASE_RESET_CONFIRM=true の二重 opt-in が無い限り即 abort する
+#   (CI secret に SUPABASE_RESET=true を置き忘れた pipeline が無人で remote DB を wipe する事故防止)。
+# - P5-R1: Phase 6b が env AUTH_ALLOWED_EMAIL_DOMAIN から public.hook_config
+#   (key=allowed_email_domain) を upsert する。未設定 = 既存値維持 / 空文字 = 制約なし。
+#   decision logic (unset / '@' strip / empty / invalid) は DRY_RUN gate より前に走り、
+#   smoke test (test_phase_7_hook_config_seed) が live DB なしで assert できる。
 #
 # IMPORTANT: file-top is set -uo pipefail only (no errexit). errexit is localised
 # inside subshell functions `do_work() ( set -euo pipefail; ... )` per H-03.
@@ -37,6 +44,21 @@ SUPABASE_MODE="${SUPABASE_MODE:-local}"
 SUPABASE_RESET="${SUPABASE_RESET:-false}"
 # DRY_RUN=true → skip side-effecting commands, smoke test only
 DRY_RUN="${DRY_RUN:-false}"
+
+# ── CI safety guard (P5-R5) ──────────────────────────────────────────────────
+# confirm() (lib/common.sh) auto-accepts when stdin is not a TTY (CI / piped),
+# so SUPABASE_RESET=true alone would run the destructive `supabase db reset`
+# unattended. Require a second explicit opt-in env in that case.
+# DRY_RUN=true is exempt (Phase 3 short-circuits before the destructive path;
+# smoke tests rely on this precedence — see C-M-02 in setup-supabase.test.sh).
+if [[ "$SUPABASE_RESET" == "true" && "$DRY_RUN" != "true" ]] \
+   && [[ ! -t 0 ]] \
+   && [[ "${SUPABASE_RESET_CONFIRM:-false}" != "true" ]]; then
+  log_error "SUPABASE_RESET=true in non-interactive mode requires SUPABASE_RESET_CONFIRM=true"
+  log_error "  confirm() auto-accepts without a TTY; this guard prevents an unattended destructive 'supabase db reset'."
+  log_error "  Either run interactively, or set SUPABASE_RESET_CONFIRM=true to acknowledge data loss."
+  exit 1
+fi
 
 # ── Phase 1: CLI check (H-01, M-02) ──────────────────────────────────────────
 phase_1_cli_check() (
@@ -255,6 +277,23 @@ phase_5_oauth_scaffold() (
   fi
 )
 
+# ── DB URL resolution (shared by Phase 6 / 6b) ───────────────────────────────
+# Local mode uses the well-known supabase port + creds; remote mode requires
+# SUPABASE_DB_URL. Echoes the URL on stdout (caller captures); errors go to
+# stderr so they surface even under command substitution.
+resolve_db_url() {
+  local db_url="${SUPABASE_DB_URL:-}"
+  if [[ -z "$db_url" ]]; then
+    if [[ "$SUPABASE_MODE" == "local" ]]; then
+      db_url="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+    else
+      log_error "  SUPABASE_DB_URL not set (required for remote mode)" >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$db_url"
+}
+
 # ── Phase 6: initial admin seed (C-01) ───────────────────────────────────────
 # Uses psql parameterized variable :'admin_email' — value is NEVER interpolated
 # into the SQL string. Email format is strictly validated BEFORE any DB call.
@@ -279,16 +318,9 @@ phase_6_admin_seed() (
     exit 1
   fi
 
-  # Resolve DB connection. Local mode uses well-known supabase port + creds.
-  local db_url="${SUPABASE_DB_URL:-}"
-  if [[ -z "$db_url" ]]; then
-    if [[ "$SUPABASE_MODE" == "local" ]]; then
-      db_url="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
-    else
-      log_error "  SUPABASE_DB_URL not set (required for remote mode)"
-      exit 1
-    fi
-  fi
+  # Resolve DB connection (shared helper, P5 refactor).
+  local db_url
+  db_url="$(resolve_db_url)" || exit 1
 
   log_info "  Seeding admin user (email format validated)..."
 
@@ -373,14 +405,21 @@ SQL
   # same admin email. Assert the row count equals exactly 1 (regardless of
   # how many times Phase 6 has run). The COUNT query is parameterized via
   # psql -v admin_email= → :'admin_email' (C-01 lineage).
+  # NOTE (P5 fix): psql does NOT interpolate -v variables inside `-c` commands
+  # (only in commands read from stdin / files). The query MUST be fed via
+  # stdin/heredoc, otherwise :'admin_email' reaches the server as a literal
+  # `:` token and fails with a syntax error.
   local count_log count_val
   count_log="/tmp/setup-supabase-seed-verify.log"
   if ! PGOPTIONS="" psql "$db_url" \
       -v ON_ERROR_STOP=1 \
       -v admin_email="$admin_email" \
       -q -X -A -t \
-      -c "SELECT COUNT(*) FROM public.allowed_users WHERE pattern_type='email'::allowed_pattern_type AND pattern_value=lower(trim(:'admin_email'));" \
-      >"$count_log" 2>&1
+      <<'SQL' >"$count_log" 2>&1
+SELECT COUNT(*) FROM public.allowed_users
+WHERE pattern_type = 'email'::allowed_pattern_type
+  AND pattern_value = lower(trim(:'admin_email'));
+SQL
   then
     log_error "  Idempotency post-verify query failed (diagnostics: $count_log)"
     exit 1
@@ -394,6 +433,78 @@ SQL
   log_success "  idempotency post-verify PASS (allowed_users row count = 1)"
 
   log_success "  admin seeded (email value omitted from log per H-05)"
+)
+
+# ── Phase 6b: domain hook config seed (P5-R1) ────────────────────────────────
+# Seeding contract with 010_domain_hook_config.sql + packages/create-app (P4):
+#   - AUTH_ALLOWED_EMAIL_DOMAIN unset      → keep existing row (migration default
+#     'classlab.co.jp'); psql is NOT invoked (no write).
+#   - AUTH_ALLOWED_EMAIL_DOMAIN set        → upsert as the primary signup domain
+#     (leading '@' stripped here, lower/trim normalised in SQL).
+#   - AUTH_ALLOWED_EMAIL_DOMAIN set to ''  → value='' = NO domain restriction
+#     (every domain auto-actives; parity with the NextAuth-side
+#     ALLOWED_ADMIN_EMAIL_DOMAIN "unset = unrestricted" semantics, D-H-01).
+# C-01 lineage: value is passed via psql -v parameterized variable (no string
+# interpolation into SQL).
+# Validation + '@' strip run BEFORE the DRY_RUN gate so the smoke suite
+# (test_phase_7_hook_config_seed) can assert the decision matrix without a DB.
+phase_6b_hook_config_seed() (
+  set -euo pipefail
+  trap 'log_error "  phase_6b_hook_config_seed failed"' ERR
+  log_info ""
+  log_info "[Phase 6b] domain hook config seed (P5-R1)..."
+
+  if [[ -z "${AUTH_ALLOWED_EMAIL_DOMAIN+x}" ]]; then
+    log_info "  AUTH_ALLOWED_EMAIL_DOMAIN unset → keeping existing hook_config row (no write)"
+    return 0
+  fi
+
+  # Leading '@' tolerated ('@example.com' → 'example.com').
+  local hook_domain="${AUTH_ALLOWED_EMAIL_DOMAIN#@}"
+  # Validate non-empty values look like a bare domain (empty = unrestricted, allowed).
+  local domain_regex='^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+  if [[ -n "$hook_domain" && ! "$hook_domain" =~ $domain_regex ]]; then
+    log_error "  AUTH_ALLOWED_EMAIL_DOMAIN is not a valid domain (expected e.g. 'example.com' or '@example.com', or empty for no restriction)"
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ -z "$hook_domain" ]]; then
+      log_info "  DRY_RUN: would set hook_config.allowed_email_domain = '' (no domain restriction)"
+    else
+      log_info "  DRY_RUN: would upsert hook_config.allowed_email_domain = $hook_domain"
+    fi
+    return 0
+  fi
+
+  local db_url
+  db_url="$(resolve_db_url)" || exit 1
+
+  # stdin/heredoc form required for -v interpolation (psql does NOT expand -v
+  # variables inside `-c` commands — see the NOTE in phase_6_admin_seed).
+  # The DO UPDATE ... WHERE IS DISTINCT FROM guard skips no-op writes, so an
+  # idempotent re-run with the same domain fires no audit trigger row (010 (2)).
+  if ! PGOPTIONS="" psql "$db_url" \
+      -v ON_ERROR_STOP=1 \
+      -v hook_domain="$hook_domain" \
+      -q -X -A -t \
+      <<'SQL' >/tmp/setup-supabase-hookcfg.log 2>&1
+INSERT INTO public.hook_config (key, value)
+VALUES ('allowed_email_domain', lower(trim(:'hook_domain')))
+ON CONFLICT (key) DO UPDATE
+  SET value = EXCLUDED.value, updated_at = now()
+  WHERE public.hook_config.value IS DISTINCT FROM EXCLUDED.value;
+SQL
+  then
+    log_error "  hook_config seed failed (diagnostics: /tmp/setup-supabase-hookcfg.log)"
+    log_error "  Common cause: migration 010_domain_hook_config.sql not applied yet (re-run Phase 3)."
+    exit 1
+  fi
+  if [[ -z "$hook_domain" ]]; then
+    log_success "  hook_config.allowed_email_domain = '' (no domain restriction)"
+  else
+    log_success "  hook_config.allowed_email_domain = $hook_domain"
+  fi
 )
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -416,6 +527,7 @@ main() {
   run_phase phase_4_rls_verify
   run_phase phase_5_oauth_scaffold
   run_phase phase_6_admin_seed
+  run_phase phase_6b_hook_config_seed
   log_info ""
   log_success "==> setup-supabase.sh complete"
 }

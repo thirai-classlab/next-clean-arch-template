@@ -20,17 +20,28 @@
 -- scaffold 注記: 本 migration は committable scaffold である。実 apply (supabase db push) +
 --   pgTAP 実行は Supabase env 整備後 (user manual) に行う。本 Step では apply しない。
 
+-- 冪等性 (P5-R2 HIGH): supabase の migration history 経由の apply は 1 回限りだが、
+--   `supabase db reset` 途中失敗後の再実行や、SQL file を既存 DB へ手動適用するケースで
+--   duplicate-object error にならないよう、全 DDL に IF NOT EXISTS / 例外吸収 guard を付ける。
+--   enum は CREATE TYPE IF NOT EXISTS が存在しないため DO ブロックで duplicate_object を吸収する。
+
 -- enum: 3 role (draft 08 §3.1)
 -- 順序は draft 08 の CREATE TYPE 定義に合わせる (admin / member / viewer)。
-CREATE TYPE user_role AS ENUM ('admin', 'member', 'viewer');
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM ('admin', 'member', 'viewer');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- enum: user 承認 status (draft 08 §3.1)
 -- pending = 承認待ち / active = 利用可 / suspended = 停止 (admin が拒否 or 凍結)。
-CREATE TYPE user_status AS ENUM ('pending', 'active', 'suspended');
+DO $$ BEGIN
+  CREATE TYPE user_status AS ENUM ('pending', 'active', 'suspended');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- public.users: auth.users の projection 行。
 -- id は auth.users(id) への FK かつ PRIMARY KEY。auth.users 行削除時に CASCADE で同期削除。
-CREATE TABLE public.users (
+CREATE TABLE IF NOT EXISTS public.users (
   id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email text NOT NULL UNIQUE,
   display_name text,
@@ -42,8 +53,8 @@ CREATE TABLE public.users (
 );
 
 -- status / role での filter (admin panel の user 一覧 filter で使用、draft 08 §3.1)
-CREATE INDEX idx_users_status ON public.users(status);
-CREATE INDEX idx_users_role ON public.users(role);
+CREATE INDEX IF NOT EXISTS idx_users_status ON public.users(status);
+CREATE INDEX IF NOT EXISTS idx_users_role ON public.users(role);
 
 -- RLS 有効化 (policy 本体は 005_rls_policies.sql)。
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;

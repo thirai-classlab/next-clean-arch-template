@@ -197,6 +197,11 @@ lint_env_example() (
 )
 
 # ── Confirm prompt (interactive guard) ────────────────────────────────────────
+# ⚠ P5-R5: confirm() AUTO-ACCEPTS when stdin is not a TTY (CI / piped stdin).
+# It is therefore NOT a safety gate for destructive operations in CI.
+# Destructive call-sites MUST add their own non-interactive guard requiring an
+# explicit second env opt-in — see setup-supabase.sh "CI safety guard (P5-R5)"
+# (SUPABASE_RESET=true + non-TTY requires SUPABASE_RESET_CONFIRM=true).
 confirm() {
   local msg="${1:-Continue?}"
   # In non-interactive mode (CI / piped), auto-accept

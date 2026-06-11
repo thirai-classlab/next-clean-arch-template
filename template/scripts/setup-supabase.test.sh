@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # scripts/setup-supabase.test.sh — smoke test for scripts/setup-supabase.sh
 #
-# Scope: 6-phase smoke test of setup-supabase.sh's structure, idempotent
-# guarantees, and security defenses (C-01 / C-02 / C-03 / NEW-H-01).
+# Scope: 7-phase smoke test of setup-supabase.sh's structure, idempotent
+# guarantees, security defenses (C-01 / C-02 / C-03 / NEW-H-01), and the
+# P5-R1 hook_config domain-seed decision matrix.
 # Strategy: prefer fast static checks (regex / syntax / dry-run) over side-
 # effecting commands so the suite stays runnable without touching Supabase.
 #
@@ -270,7 +271,32 @@ test_phase_5_dry_run() {
     tail -20 "$log_reset" >&2
   fi
 
-  rm -f "$log" "$log2" "$log_remote" "$log_reset"
+  # P5-R5: non-interactive SUPABASE_RESET guard. With stdin redirected from
+  # /dev/null (non-TTY) and DRY_RUN=false, SUPABASE_RESET=true must abort
+  # BEFORE any phase runs unless SUPABASE_RESET_CONFIRM=true is also set.
+  # (The guard fires at startup, so no docker/supabase is required here.)
+  local log_ci_guard
+  log_ci_guard="$(mktemp -t setup-supabase-ci-guard.XXXXXX)"
+  if ALLOW_BASH3=true DRY_RUN=false SUPABASE_MODE=local SUPABASE_RESET=true \
+       bash "$SUT" </dev/null >"$log_ci_guard" 2>&1; then
+    fail "P5-R5: non-interactive SUPABASE_RESET=true did not abort (unattended destructive reset possible)"
+    tail -10 "$log_ci_guard" >&2
+  else
+    if grep -q 'SUPABASE_RESET_CONFIRM=true' "$log_ci_guard"; then
+      pass "P5-R5: non-interactive SUPABASE_RESET=true aborts and demands SUPABASE_RESET_CONFIRM=true"
+    else
+      fail "P5-R5: guard aborted but without the SUPABASE_RESET_CONFIRM hint"
+      tail -10 "$log_ci_guard" >&2
+    fi
+    # Guard must fire before Phase 1 (no phase banner in output).
+    if grep -qE '\[Phase 1\]' "$log_ci_guard"; then
+      fail "P5-R5: guard fired after Phase 1 started (should abort at startup)"
+    else
+      pass "P5-R5: guard aborts before any phase runs"
+    fi
+  fi
+
+  rm -f "$log" "$log2" "$log_remote" "$log_reset" "$log_ci_guard"
 }
 
 # ── Phase 6: safe_dotenv_load RCE resistance (NEW-H-01) ──────────────────────
@@ -399,6 +425,122 @@ EOF
   rm -f "$tmp_env" "$tmp_bound"
 }
 
+# ── Phase 7: hook_config domain seed decision matrix (P5-R1) ─────────────────
+# phase_6b_hook_config_seed validates + normalises AUTH_ALLOWED_EMAIL_DOMAIN
+# BEFORE its DRY_RUN gate, so the full decision matrix (unset / set / '@' strip /
+# empty / invalid) is assertable via DRY_RUN output without a live DB.
+test_phase_7_hook_config_seed() {
+  echo ""
+  echo "[Phase 7] hook_config domain seed (P5-R1)"
+
+  local log_a log_b log_c log_d log_e
+  log_a="$(mktemp -t hookcfg-unset.XXXXXX)"
+  log_b="$(mktemp -t hookcfg-domain.XXXXXX)"
+  log_c="$(mktemp -t hookcfg-at.XXXXXX)"
+  log_d="$(mktemp -t hookcfg-empty.XXXXXX)"
+  log_e="$(mktemp -t hookcfg-invalid.XXXXXX)"
+
+  # (1) unset → keep existing row; the psql write path is never reached
+  #     (no upsert announced). env -u guards against an inherited value.
+  if env -u AUTH_ALLOWED_EMAIL_DOMAIN ALLOW_BASH3=true DRY_RUN=true SUPABASE_MODE=local \
+       bash "$SUT" >"$log_a" 2>&1; then
+    if grep -q 'AUTH_ALLOWED_EMAIL_DOMAIN unset' "$log_a" \
+       && grep -q 'keeping existing hook_config row (no write)' "$log_a"; then
+      pass "P5-R1(1): unset → keeps existing hook_config row (no write)"
+    else
+      fail "P5-R1(1): unset branch message missing"
+      tail -10 "$log_a" >&2
+    fi
+    if grep -qE 'would (upsert|set) hook_config' "$log_a"; then
+      fail "P5-R1(1): unset still announced a hook_config write (psql path reached)"
+    else
+      pass "P5-R1(1): unset → no hook_config write announced (psql path not reached)"
+    fi
+  else
+    fail "P5-R1(1): DRY_RUN with unset AUTH_ALLOWED_EMAIL_DOMAIN exited non-zero"
+    tail -10 "$log_a" >&2
+  fi
+
+  # (2) example.com → upsert path announced with the exact domain, exit 0.
+  if AUTH_ALLOWED_EMAIL_DOMAIN=example.com ALLOW_BASH3=true DRY_RUN=true SUPABASE_MODE=local \
+       bash "$SUT" >"$log_b" 2>&1; then
+    if grep -q "would upsert hook_config.allowed_email_domain = example.com" "$log_b"; then
+      pass "P5-R1(2): example.com → upsert announced (DRY_RUN)"
+    else
+      fail "P5-R1(2): upsert line for example.com missing"
+      tail -10 "$log_b" >&2
+    fi
+  else
+    fail "P5-R1(2): DRY_RUN with example.com exited non-zero"
+    tail -10 "$log_b" >&2
+  fi
+
+  # (3) @example.com → leading '@' stripped before upsert.
+  if AUTH_ALLOWED_EMAIL_DOMAIN=@example.com ALLOW_BASH3=true DRY_RUN=true SUPABASE_MODE=local \
+       bash "$SUT" >"$log_c" 2>&1; then
+    local upsert_line
+    upsert_line="$(grep 'would upsert hook_config.allowed_email_domain' "$log_c" || true)"
+    if [[ "$upsert_line" == *"= example.com"* && "$upsert_line" != *"@example.com"* ]]; then
+      pass "P5-R1(3): leading '@' stripped (@example.com → example.com)"
+    else
+      fail "P5-R1(3): '@' strip broken (line: ${upsert_line:-<missing>})"
+      tail -10 "$log_c" >&2
+    fi
+  else
+    fail "P5-R1(3): DRY_RUN with @example.com exited non-zero"
+    tail -10 "$log_c" >&2
+  fi
+
+  # (4) '' (set but empty) → 'no domain restriction' semantics, exit 0.
+  if AUTH_ALLOWED_EMAIL_DOMAIN='' ALLOW_BASH3=true DRY_RUN=true SUPABASE_MODE=local \
+       bash "$SUT" >"$log_d" 2>&1; then
+    if grep -q "no domain restriction" "$log_d"; then
+      pass "P5-R1(4): empty string → 'no domain restriction' announced"
+    else
+      fail "P5-R1(4): 'no domain restriction' message missing for empty value"
+      tail -10 "$log_d" >&2
+    fi
+  else
+    fail "P5-R1(4): DRY_RUN with empty AUTH_ALLOWED_EMAIL_DOMAIN exited non-zero"
+    tail -10 "$log_d" >&2
+  fi
+
+  # (5) invalid!value → validation error, non-zero exit (fires even in DRY_RUN
+  #     because validation precedes the DRY_RUN gate).
+  if AUTH_ALLOWED_EMAIL_DOMAIN='invalid!value' ALLOW_BASH3=true DRY_RUN=true SUPABASE_MODE=local \
+       bash "$SUT" >"$log_e" 2>&1; then
+    fail "P5-R1(5): invalid domain did not abort (validation bypassed)"
+    tail -10 "$log_e" >&2
+  else
+    if grep -q 'not a valid domain' "$log_e"; then
+      pass "P5-R1(5): invalid domain aborts with validation error"
+    else
+      fail "P5-R1(5): aborted but without the 'not a valid domain' message"
+      tail -10 "$log_e" >&2
+    fi
+    if grep -qE 'would (upsert|set) hook_config' "$log_e"; then
+      fail "P5-R1(5): invalid domain still announced a hook_config write"
+    else
+      pass "P5-R1(5): invalid domain → no hook_config write announced"
+    fi
+  fi
+
+  # Static C-01 lineage: the hook_config psql call must use the parameterized
+  # variable, and the SQL heredoc must be free of shell interpolation.
+  if grep -qE "[[:space:]]-v hook_domain=" "$SUT" && grep -qE ":'hook_domain'" "$SUT"; then
+    pass "P5-R1: psql -v hook_domain + :'hook_domain' parameterized variable used"
+  else
+    fail "P5-R1: hook_domain parameterized variable pattern missing"
+  fi
+  if awk '/<<.SQL/,/^SQL$/' "$SUT" | grep -qE '\$\{?(hook_domain|AUTH_ALLOWED_EMAIL_DOMAIN)\}?'; then
+    fail "P5-R1: SQL heredoc contains shell interpolation of the domain value"
+  else
+    pass "P5-R1: SQL heredoc body free of domain interpolation"
+  fi
+
+  rm -f "$log_a" "$log_b" "$log_c" "$log_d" "$log_e"
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
   echo "==> setup-supabase.test.sh"
@@ -411,6 +553,7 @@ main() {
   test_phase_4_phase_contract
   test_phase_5_dry_run
   test_phase_6_safe_dotenv
+  test_phase_7_hook_config_seed
 
   echo ""
   local total pass_count fail_count

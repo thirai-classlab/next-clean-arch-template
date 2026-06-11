@@ -22,7 +22,9 @@
 -- ============================================================================
 -- public.audit_log: 全 mutation の監査ログ (draft 08 §3.3)
 -- ============================================================================
-CREATE TABLE public.audit_log (
+-- 冪等性 (P5-R2 HIGH): 再 apply / 手動適用で duplicate-object error にならないよう
+--   IF NOT EXISTS guard を table / index に付ける (function は CREATE OR REPLACE で元々冪等)。
+CREATE TABLE IF NOT EXISTS public.audit_log (
   id bigserial PRIMARY KEY,
   actor_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
   action text NOT NULL,                 -- 例: 'user.signup' / 'bot.create' / 'role.change'
@@ -34,9 +36,9 @@ CREATE TABLE public.audit_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_audit_log_actor ON public.audit_log(actor_id);
-CREATE INDEX idx_audit_log_target ON public.audit_log(target_type, target_id);
-CREATE INDEX idx_audit_log_created_at ON public.audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON public.audit_log(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_target ON public.audit_log(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON public.audit_log(created_at DESC);
 
 ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
 
